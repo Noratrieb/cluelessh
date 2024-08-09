@@ -107,35 +107,26 @@ impl ServerConnection {
 }
 
 impl ServerConnection {
-    pub fn recv_bytes(&mut self, mut bytes: &[u8]) -> Result<()> {
-        while let Some(consumed) = self.recv_bytes_step(bytes)? {
-            bytes = &bytes[consumed..];
-            if bytes.is_empty() {
-                break;
+    pub fn recv_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        if let ServerState::ProtoExchange { received } = &mut self.state {
+            received.extend_from_slice(bytes);
+            if received.windows(2).find(|win| win == b"\r\n").is_some() {
+                // TODO: care that its SSH 2.0 instead of anythin anything else
+                // The client will not send any more information than this until we respond, so discord the rest of the bytes.
+                let client_identification = received.to_owned();
+                self.queue_msg(MsgKind::ServerProtocolInfo);
+                self.state = ServerState::KeyExchangeInit {
+                    client_identification,
+                };
             }
-        }
-        Ok(())
-    }
-    fn recv_bytes_step(&mut self, bytes: &[u8]) -> Result<Option<usize>> {
-        if !matches!(self.state, ServerState::ProtoExchange { .. }) {
-            self.packet_transport.recv_bytes(bytes);
+            // This means that we must be called at least twice, which is fine I think.
+            return Ok(());
         }
 
-        let result = match &mut self.state {
-            ServerState::ProtoExchange { received } => {
-                // TODO: get rid of this allocation :(
-                received.extend_from_slice(bytes);
-                if received.windows(2).find(|win| win == b"\r\n").is_some() {
-                    // TODO: care that its SSH 2.0 instead of anythin anything else
-                    // The client will not send any more information than this until we respond, so discord the rest of the bytes.
-                    let client_identification = received.to_owned();
-                    self.queue_msg(MsgKind::ServerProtocolInfo);
-                    self.state = ServerState::KeyExchangeInit {
-                        client_identification,
-                    };
-                }
-                None
-            }
+        self.packet_transport.recv_bytes(bytes)?;
+
+        match &mut self.state {
+            ServerState::ProtoExchange { .. } => unreachable!("handled above"),
             ServerState::KeyExchangeInit {
                 client_identification,
             } => match self.packet_transport.next_packet() {
@@ -219,10 +210,8 @@ impl ServerConnection {
                         client_kexinit: data.payload,
                         server_kexinit: server_kexinit_payload,
                     };
-
-                    None
                 }
-                None => None,
+                None => {},
             },
             ServerState::DhKeyInit {
                 client_identification,
@@ -313,10 +302,8 @@ impl ServerConnection {
                     }));
                     self.state = ServerState::NewKeys;
                     // TODO: set keys for transport
-
-                    None
                 }
-                None => None,
+                None => {},
             },
             ServerState::NewKeys => match self.packet_transport.next_packet() {
                 Some(data) => {
@@ -328,14 +315,12 @@ impl ServerConnection {
                         payload: vec![Packet::SSH_MSG_NEWKEYS],
                     }));
                     self.state = ServerState::ServiceRequest {};
-
-                    None
                 }
-                None => None,
+                None => {},
             },
-            ServerState::ServiceRequest {} => None,
-        };
-        Ok(result)
+            ServerState::ServiceRequest {} => {},
+        }
+        Ok(())
     }
 
     pub fn next_message_to_send(&mut self) -> Option<Msg> {
