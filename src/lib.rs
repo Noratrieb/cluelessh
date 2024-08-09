@@ -57,6 +57,9 @@ enum ServerState {
         client_kexinit: Vec<u8>,
         server_kexinit: Vec<u8>,
     },
+    NewKeys {
+        client_packet: PacketParser,
+    },
     ServiceRequest {},
 }
 
@@ -274,13 +277,30 @@ impl ServerConnection {
                     self.queue_msg(MsgKind::Packet(Packet {
                         payload: packet.to_bytes(),
                     }));
+                    self.state = ServerState::NewKeys {
+                        client_packet: PacketParser::new(),
+                    };
+
+                    Some(consumed)
+                }
+                None => None,
+            },
+            ServerState::NewKeys { client_packet } => match client_packet.recv_bytes(bytes, ())? {
+                Some((consumed, data)) => {
+                    if data.payload != &[Packet::SSH_MSG_NEWKEYS] {
+                        return Err(client_error!("did not send SSH_MSG_NEWKEYS"));
+                    }
+
+                    self.queue_msg(MsgKind::Packet(Packet {
+                        payload: vec![Packet::SSH_MSG_NEWKEYS],
+                    }));
                     self.state = ServerState::ServiceRequest {};
 
                     Some(consumed)
                 }
                 None => None,
             },
-            ServerState::ServiceRequest {} => todo!(),
+            ServerState::ServiceRequest {} => None,
         };
         Ok(result)
     }
@@ -319,6 +339,7 @@ struct Packet {
 }
 impl Packet {
     const SSH_MSG_KEXINIT: u8 = 20;
+    const SSH_MSG_NEWKEYS: u8 = 21;
     const SSH_MSG_KEXDH_INIT: u8 = 30;
     const SSH_MSG_KEXDH_REPLY: u8 = 31;
 
