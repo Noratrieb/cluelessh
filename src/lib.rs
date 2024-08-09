@@ -25,22 +25,22 @@ macro_rules! client_error {
     };
 }
 use core::str;
-use std::{io::Write, mem::take};
+use std::mem::take;
 
 use client_error;
 use ed25519_dalek::ed25519::signature::Signer;
-use eyre::Context;
 use parse::{MpInt, NameList, Parser, Writer};
+use rand::RngCore;
 use sha2::Digest;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 // This is definitely who we are.
 pub const SERVER_IDENTIFICATION: &[u8] = b"SSH-2.0-OpenSSH_9.7\r\n";
 
-#[derive(Default)]
 pub struct ServerConnection {
     state: ServerState,
     send_queue: Vec<Msg>,
+    rng: Box<dyn SshRng + Send + Sync>,
 }
 
 enum ServerState {
@@ -63,10 +63,44 @@ enum ServerState {
     ServiceRequest {},
 }
 
-impl Default for ServerState {
-    fn default() -> Self {
-        Self::ProtoExchange {
-            received: Vec::new(),
+pub trait SshRng {
+    fn fill_bytes(&mut self, dest: &mut [u8]);
+}
+struct SshRngRandAdapter<'a>(&'a mut dyn SshRng);
+impl rand::CryptoRng for SshRngRandAdapter<'_> {}
+impl rand::RngCore for SshRngRandAdapter<'_> {
+    fn next_u32(&mut self) -> u32 {
+        self.next_u64() as u32
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        rand_core::impls::next_u64_via_fill(self)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.0.fill_bytes(dest);
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), rand::Error> {
+        Ok(self.fill_bytes(dest))
+    }
+}
+
+pub struct ThreadRngRand;
+impl SshRng for ThreadRngRand {
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        rand::thread_rng().fill_bytes(dest);
+    }
+}
+
+impl ServerConnection {
+    pub fn new(rng: impl SshRng + Send + Sync + 'static) -> Self {
+        Self {
+            state: ServerState::ProtoExchange {
+                received: Vec::new(),
+            },
+            send_queue: Vec::new(),
+            rng: Box::new(rng),
         }
     }
 }
@@ -197,7 +231,8 @@ impl ServerConnection {
                 Some((consumed, data)) => {
                     let dh = DhKeyExchangeInitPacket::parse(&data.payload)?;
 
-                    let secret = EphemeralSecret::random_from_rng(rand::thread_rng());
+                    let secret =
+                        EphemeralSecret::random_from_rng(SshRngRandAdapter(&mut *self.rng));
                     let server_public_key = PublicKey::from(&secret); // f
 
                     let client_public_key = dh.e; // e
@@ -210,11 +245,9 @@ impl ServerConnection {
                         data: PUB_HOSTKEY_BYTES,
                     };
 
-                    let dump = std::fs::File::create("debug.bin").wrap_err("opening debug.bin")?;
                     let mut hash = sha2::Sha256::new();
                     let add_hash = |hash: &mut sha2::Sha256, bytes: &[u8]| {
                         hash.update(bytes);
-                        (&dump).write_all(bytes).unwrap();
                     };
                     let hash_string = |hash: &mut sha2::Sha256, bytes: &[u8]| {
                         add_hash(hash, &u32::to_be_bytes(bytes.len() as u32));
@@ -325,7 +358,7 @@ enum MsgKind {
 
 impl Msg {
     // TODO: MAKE THIS ZERO ALLOC AAAAAA
-    pub fn to_bytes_inefficient(self) -> Vec<u8> {
+    pub fn to_bytes(self) -> Vec<u8> {
         match self.0 {
             MsgKind::ServerProtocolInfo => SERVER_IDENTIFICATION.to_vec(),
             MsgKind::Packet(v) => v.to_bytes(),
@@ -619,7 +652,9 @@ const PRIVKEY_BYTES: &[u8; 32] = &[
 
 #[cfg(test)]
 mod tests {
-    use crate::{MsgKind, PacketParser, ServerConnection};
+    use hex_literal::hex;
+
+    use crate::{MsgKind, PacketParser, ServerConnection, SshRng};
 
     trait OptionExt {
         fn unwrap_none(self);
@@ -631,9 +666,24 @@ mod tests {
         }
     }
 
+    struct NoRng;
+    impl SshRng for NoRng {
+        fn fill_bytes(&mut self, _: &mut [u8]) {
+            unreachable!()
+        }
+    }
+
+    struct HardcodedRng(Vec<u8>);
+    impl SshRng for HardcodedRng {
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            dest.copy_from_slice(&self.0[..dest.len()]);
+            self.0.splice(0..dest.len(), []);
+        }
+    }
+
     #[test]
     fn protocol_exchange() {
-        let mut con = ServerConnection::default();
+        let mut con = ServerConnection::new(NoRng);
         con.recv_bytes(b"SSH-2.0-OpenSSH_9.7\r\n").unwrap();
         let msg = con.next_message_to_send().unwrap();
         assert_eq!(msg.0, MsgKind::ServerProtocolInfo);
@@ -641,7 +691,7 @@ mod tests {
 
     #[test]
     fn protocol_exchange_slow_client() {
-        let mut con = ServerConnection::default();
+        let mut con = ServerConnection::new(NoRng);
         con.recv_bytes(b"SSH-2.0-").unwrap();
         con.recv_bytes(b"OpenSSH_9.7\r\n").unwrap();
         let msg = con.next_message_to_send().unwrap();
@@ -677,5 +727,113 @@ mod tests {
         let (consumed, data) = p.test_recv_bytes(&[0, 0, 0, 2, 1, 2], ()).unwrap();
         assert_eq!(consumed, 6);
         assert_eq!(data, &[1, 2]);
+    }
+
+    #[test]
+    fn handshake() {
+        #[rustfmt::skip]
+        let rng = vec![
+            0x14, 0xa2, 0x04, 0xa5, 0x4b, 0x2f, 0x5f, 0xa7, 0xff, 0x53, 0x13, 0x67, 0x57, 0x67, 0xbc, 0x55,
+            0x3f, 0xc0, 0x6c, 0x0d, 0x07, 0x8f, 0xe2, 0x75, 0x95, 0x18, 0x4b, 0xd2, 0xcb, 0xd0, 0x64, 0x06,
+        ];
+
+        struct Part {
+            client: &'static [u8],
+            server: &'static [u8],
+        }
+
+        // Extracted from a real OpenSSH client using this server (with hardcoded creds) using Wireshark.
+        let conversation = [
+            Part {
+                client: &hex!("5353482d322e302d4f70656e5353485f392e370d0a"),
+                server: &hex!("5353482d322e302d4f70656e5353485f392e370d0a"),
+            },
+            // KEX Init
+            Part {
+                client: &hex!(
+                    "
+                    000005fc071401af35150e67f2bc6dc4bc6b5330901900000131736e74727570373631783235353
+                    1392d736861353132406f70656e7373682e636f6d2c637572766532353531392d7368613235362c
+                    637572766532353531392d736861323536406c69627373682e6f72672c656364682d736861322d6
+                    e697374703235362c656364682d736861322d6e697374703338342c656364682d736861322d6e69
+                    7374703532312c6469666669652d68656c6c6d616e2d67726f75702d65786368616e67652d73686
+                    13235362c6469666669652d68656c6c6d616e2d67726f757031362d7368613531322c6469666669
+                    652d68656c6c6d616e2d67726f757031382d7368613531322c6469666669652d68656c6c6d616e2
+                    d67726f757031342d7368613235362c6578742d696e666f2d632c6b65782d7374726963742d632d
+                    763030406f70656e7373682e636f6d000001cf7373682d656432353531392d636572742d7630314
+                    06f70656e7373682e636f6d2c65636473612d736861322d6e697374703235362d636572742d7630
+                    31406f70656e7373682e636f6d2c65636473612d736861322d6e697374703338342d636572742d7
+                    63031406f70656e7373682e636f6d2c65636473612d736861322d6e697374703532312d63657274
+                    2d763031406f70656e7373682e636f6d2c736b2d7373682d656432353531392d636572742d76303
+                    1406f70656e7373682e636f6d2c736b2d65636473612d736861322d6e697374703235362d636572
+                    742d763031406f70656e7373682e636f6d2c7273612d736861322d3531322d636572742d7630314
+                    06f70656e7373682e636f6d2c7273612d736861322d3235362d636572742d763031406f70656e73
+                    73682e636f6d2c7373682d656432353531392c65636473612d736861322d6e697374703235362c6
+                    5636473612d736861322d6e697374703338342c65636473612d736861322d6e697374703532312c
+                    736b2d7373682d65643235353139406f70656e7373682e636f6d2c736b2d65636473612d7368613
+                    22d6e69737470323536406f70656e7373682e636f6d2c7273612d736861322d3531322c7273612d
+                    736861322d3235360000006c63686163686132302d706f6c7931333035406f70656e7373682e636
+                    f6d2c6165733132382d6374722c6165733139322d6374722c6165733235362d6374722c61657331
+                    32382d67636d406f70656e7373682e636f6d2c6165733235362d67636d406f70656e7373682e636
+                    f6d0000006c63686163686132302d706f6c7931333035406f70656e7373682e636f6d2c61657331
+                    32382d6374722c6165733139322d6374722c6165733235362d6374722c6165733132382d67636d4
+                    06f70656e7373682e636f6d2c6165733235362d67636d406f70656e7373682e636f6d000000d575
+                    6d61632d36342d65746d406f70656e7373682e636f6d2c756d61632d3132382d65746d406f70656
+                    e7373682e636f6d2c686d61632d736861322d3235362d65746d406f70656e7373682e636f6d2c68
+                    6d61632d736861322d3531322d65746d406f70656e7373682e636f6d2c686d61632d736861312d6
+                    5746d406f70656e7373682e636f6d2c756d61632d3634406f70656e7373682e636f6d2c756d6163
+                    2d313238406f70656e7373682e636f6d2c686d61632d736861322d3235362c686d61632d7368613
+                    22d3531322c686d61632d73686131000000d5756d61632d36342d65746d406f70656e7373682e63
+                    6f6d2c756d61632d3132382d65746d406f70656e7373682e636f6d2c686d61632d736861322d323
+                    5362d65746d406f70656e7373682e636f6d2c686d61632d736861322d3531322d65746d406f7065
+                    6e7373682e636f6d2c686d61632d736861312d65746d406f70656e7373682e636f6d2c756d61632
+                    d3634406f70656e7373682e636f6d2c756d61632d313238406f70656e7373682e636f6d2c686d61
+                    632d736861322d3235362c686d61632d736861322d3531322c686d61632d736861310000001a6e6
+                    f6e652c7a6c6962406f70656e7373682e636f6d2c7a6c69620000001a6e6f6e652c7a6c6962406f
+                    70656e7373682e636f6d2c7a6c69620000000000000000000000000000000000000000
+                    "
+                ),
+                server: &hex!(
+                    "
+                    000000c40d140000000000000000000000000000000000000011637572766532353531392d73686
+                    13235360000000b7373682d656432353531390000001d63686163686132302d706f6c7931333035
+                    406f70656e7373682e636f6d0000001d63686163686132302d706f6c7931333035406f70656e737
+                    3682e636f6d0000000d686d61632d736861322d3235360000000d686d61632d736861322d323536
+                    000000046e6f6e65000000046e6f6e6500000000000000000000000000000000000000000000000
+                    00000
+                    "
+                ),
+            },
+            // ECDH KEX Init
+            Part {
+                client: &hex!(
+                    "
+                    0000002c061e0000002086ac62fd02ac3333e2470f6024d0027696b29056f281f6fde0c05956fcf
+                    d3a53000000000000
+                    "
+                ),
+                server: &hex!(
+                    "
+                    000000bc081f000000330000000b7373682d6564323535313900000020e939cdfa6fc0d737333b5
+                    34e913dd332c8d5179fe00c3045575217224b19b8f6000000203b92eb7008cc13056bc9f198049f
+                    75d5832f3650969dfcccd80841431b350160000000530000000b7373682d6564323535313900000
+                    04096ba808246f3b76270475d495330bfe174043609e81be35eadcabc0537ddcf8c4502831e9fef
+                    f2ef0e49cbe93e1747c01e2c9a6d19839648694defeb2adc77060000000000000000
+                    "
+                ),
+            },
+            // New Keys
+            Part {
+                client: &hex!("0000000c0a1500000000000000000000"),
+                server: &hex!("0000000c0a1500000000000000000000"),
+            },
+        ];
+
+        let mut con = ServerConnection::new(HardcodedRng(rng));
+        for part in conversation {
+            con.recv_bytes(&part.client).unwrap();
+            let bytes = con.next_message_to_send().unwrap().to_bytes();
+            assert_eq!(part.server, bytes);
+        }
     }
 }

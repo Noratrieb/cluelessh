@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use eyre::{Context, Result};
-use fakessh::{ServerConnection, SshError};
+use fakessh::{ServerConnection, SshError, ThreadRngRand};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -32,7 +32,7 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
 
     info!(?addr, "Received a new connection");
 
-    let mut state = ServerConnection::default();
+    let mut state = ServerConnection::new(ThreadRngRand);
 
     loop {
         let mut buf = [0; 1024];
@@ -57,7 +57,7 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
         }
 
         while let Some(msg) = state.next_message_to_send() {
-            conn.write_all(&msg.to_bytes_inefficient())
+            conn.write_all(&msg.to_bytes())
                 .await
                 .wrap_err("writing response")?;
         }
