@@ -24,10 +24,11 @@ macro_rules! client_error {
         $crate::SshError::ClientError(::std::format!($($tt)*))
     };
 }
+use core::str;
 use std::mem::take;
 
 use client_error;
-use ed25519_dalek::ed25519::signature::SignerMut;
+use ed25519_dalek::ed25519::signature::Signer;
 use parse::{MpInt, NameList, Parser, Writer};
 use sha2::Digest;
 use x25519_dalek::{EphemeralSecret, PublicKey};
@@ -140,7 +141,7 @@ impl ServerConnection {
                         ));
                     }
 
-                    let my_own_kex_init = KeyExchangeInitPacket {
+                    let server_kexinit = KeyExchangeInitPacket {
                         cookie: [0; 16],
                         kex_algorithms: NameList::one(key_algorithm),
                         server_host_key_algorithms: NameList::one(server_host_key_algorithm),
@@ -168,7 +169,7 @@ impl ServerConnection {
                     };
 
                     let client_identification = take(client_identification);
-                    let server_kexinit_payload = my_own_kex_init.to_bytes();
+                    let server_kexinit_payload = server_kexinit.to_bytes();
                     self.queue_msg(MsgKind::Packet(Packet {
                         payload: server_kexinit_payload.clone(),
                     }));
@@ -193,35 +194,40 @@ impl ServerConnection {
                     let dh = DhKeyExchangeInitPacket::parse(&data.payload)?;
 
                     let secret = EphemeralSecret::random_from_rng(rand::thread_rng());
-                    let server_public = PublicKey::from(&secret);
+                    let f = PublicKey::from(&secret);
 
-                    let shared_secret = secret.diffie_hellman(&dh.e.to_x25519_public_key()?);
+                    let k = secret.diffie_hellman(&dh.e.to_x25519_public_key()?);
+
+                    let ssh_pubkey = SshPublicKey {
+                        format: b"ssh-ed25519",
+                        data: PUBKEY_BYTES,
+                    };
 
                     let mut hash = sha2::Sha256::new();
                     let mut hash_string = |bytes: &[u8]| {
                         hash.update(u32::to_be_bytes(bytes.len() as u32));
                         hash.update(bytes);
                     };
-                    hash_string(&client_identification[..(client_identification.len() - 2)]);
-                    hash_string(&SERVER_IDENTIFICATION[..(SERVER_IDENTIFICATION.len() - 2)]);
-                    hash_string(client_kexinit);
-                    hash_string(server_kexinit);
+                    hash_string(&client_identification[..(client_identification.len() - 2)]); // V_C
+                    hash_string(&SERVER_IDENTIFICATION[..(SERVER_IDENTIFICATION.len() - 2)]); // V_S
+                    hash_string(client_kexinit); // I_C
+                    hash_string(server_kexinit); // I_S
+                    hash_string(&ssh_pubkey.to_bytes()); // K_S
                     let mut hash_mpint = hash_string;
-                    hash_mpint(&dh.e.0);
-                    hash_mpint(server_public.as_bytes());
-                    hash_mpint(shared_secret.as_bytes());
+                    hash_mpint(&dh.e.0); // e
+                    hash_mpint(f.as_bytes()); // f
+                    hash_mpint(k.as_bytes()); // K
 
                     let hash = hash.finalize();
 
-                    let mut host_priv_key = ed25519_dalek::SigningKey::from_bytes(PRIVKEY_BYTES);
+                    let host_priv_key = ed25519_dalek::SigningKey::from_bytes(PRIVKEY_BYTES);
+                    assert_eq!(PUBKEY_BYTES, host_priv_key.verifying_key().as_bytes());
+
                     let signature = host_priv_key.sign(&hash);
 
                     let packet = DhKeyExchangeInitReplyPacket {
-                        pubkey: SshPublicKey {
-                            format: b"ssh-ed25519",
-                            data: PUBKEY_BYTES,
-                        },
-                        f: MpInt(server_public.as_bytes()),
+                        pubkey: ssh_pubkey,
+                        f: MpInt(f.as_bytes()),
                         signature: SshSignature {
                             format: b"ssh-ed25519",
                             data: &signature.to_bytes(),
@@ -427,6 +433,17 @@ struct SshPublicKey<'a> {
     format: &'a [u8],
     data: &'a [u8],
 }
+impl SshPublicKey<'_> {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Writer::new();
+        data.u32((4 + self.format.len() + 4 + self.data.len()) as u32);
+        // ed25519-specific!
+        // <https://datatracker.ietf.org/doc/html/rfc8709#section-4>
+        data.string(&self.format);
+        data.string(&self.data);
+        data.finish()
+    }
+}
 #[derive(Debug)]
 struct SshSignature<'a> {
     format: &'a [u8],
@@ -444,11 +461,7 @@ impl<'a> DhKeyExchangeInitReplyPacket<'a> {
         let mut data = Writer::new();
 
         data.u8(Packet::SSH_MSG_KEXDH_REPLY);
-        data.u32((4 + self.pubkey.format.len() + 4 + self.pubkey.data.len()) as u32);
-        // ed25519-specific!
-        // <https://datatracker.ietf.org/doc/html/rfc8709#section-4>
-        data.string(&self.pubkey.format);
-        data.string(&self.pubkey.data);
+        data.write(&self.pubkey.to_bytes());
         data.mpint(self.f);
 
         data.u32((4 + self.signature.format.len() + 4 + self.signature.data.len()) as u32);
@@ -539,10 +552,10 @@ AAAECSeskxuEtJrr9L7ZkbpogXC5pKRNVHx1ueMX2h1XUnmek5zfpvwNc3MztTTpE90zLI
 1Ref4AwwRVdSFyJLGbj2AAAAB3Rlc3RrZXkBAgMEBQY=
 -----END OPENSSH PRIVATE KEY-----
 ";
-/// Manually extracted from the key using <https://dnaeon.github.io/openssh-private-key-binary-format/>, probably wrong
+/// Manually extracted from the key using <https://peterlyons.com/problog/2017/12/openssh-ed25519-private-key-file-format/>, probably wrong
 const PRIVKEY_BYTES: &[u8; 32] = &[
-    0xb8, 0x4b, 0x49, 0xae, 0xbf, 0x4b, 0xed, 0x99, 0x1b, 0xa6, 0x88, 0x17, 0x0b, 0x9a, 0x4a, 0x44,
-    0xd5, 0x47, 0xc7, 0x5b, 0x9e, 0x31, 0x7d, 0xa1, 0xd5, 0x75, 0x27, 0x99, 0xe9, 0x39, 0xcd, 0xfa,
+    0x92, 0x7a, 0xc9, 0x31, 0xb8, 0x4b, 0x49, 0xae, 0xbf, 0x4b, 0xed, 0x99, 0x1b, 0xa6, 0x88, 0x17,
+    0x0b, 0x9a, 0x4a, 0x44, 0xd5, 0x47, 0xc7, 0x5b, 0x9e, 0x31, 0x7d, 0xa1, 0xd5, 0x75, 0x27, 0x99,
 ];
 
 #[cfg(test)]

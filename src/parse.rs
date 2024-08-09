@@ -16,11 +16,6 @@ impl<'a> Parser<'a> {
         Ok(arr[0])
     }
 
-    pub(crate) fn u16(&mut self) -> Result<u16> {
-        let arr = self.read_array()?;
-        Ok(u16::from_be_bytes(arr))
-    }
-
     pub(crate) fn u32(&mut self) -> Result<u32> {
         let arr = self.read_array()?;
         Ok(u32::from_be_bytes(arr))
