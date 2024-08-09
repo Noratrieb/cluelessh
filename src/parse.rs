@@ -126,6 +126,8 @@ impl Debug for NameList<'_> {
     }
 }
 
+// TODO: THIS IS A BRITTLE MESS BECAUSE THE RFC SUCKS HERE
+// DO NOT TOUCH MPINT ENCODING ANYWHERE
 #[derive(Debug, Clone, Copy)]
 pub struct MpInt<'a>(pub(crate) &'a [u8]);
 

@@ -25,10 +25,11 @@ macro_rules! client_error {
     };
 }
 use core::str;
-use std::mem::take;
+use std::{io::Write, mem::take};
 
 use client_error;
 use ed25519_dalek::ed25519::signature::Signer;
+use eyre::Context;
 use parse::{MpInt, NameList, Parser, Writer};
 use sha2::Digest;
 use x25519_dalek::{EphemeralSecret, PublicKey};
@@ -194,40 +195,77 @@ impl ServerConnection {
                     let dh = DhKeyExchangeInitPacket::parse(&data.payload)?;
 
                     let secret = EphemeralSecret::random_from_rng(rand::thread_rng());
-                    let f = PublicKey::from(&secret);
+                    let server_public_key = PublicKey::from(&secret); // f
 
-                    let k = secret.diffie_hellman(&dh.e.to_x25519_public_key()?);
+                    let client_public_key = dh.e; // e
 
-                    let ssh_pubkey = SshPublicKey {
+                    let shared_secret =
+                        secret.diffie_hellman(&client_public_key.to_x25519_public_key()?); // k
+
+                    let pub_hostkey = SshPublicKey {
                         format: b"ssh-ed25519",
-                        data: PUBKEY_BYTES,
+                        data: PUB_HOSTKEY_BYTES,
                     };
 
+                    let dump = std::fs::File::create("debug.bin").wrap_err("opening debug.bin")?;
                     let mut hash = sha2::Sha256::new();
-                    let mut hash_string = |bytes: &[u8]| {
-                        hash.update(u32::to_be_bytes(bytes.len() as u32));
+                    let add_hash = |hash: &mut sha2::Sha256, bytes: &[u8]| {
                         hash.update(bytes);
+                        (&dump).write_all(bytes).unwrap();
                     };
-                    hash_string(&client_identification[..(client_identification.len() - 2)]); // V_C
-                    hash_string(&SERVER_IDENTIFICATION[..(SERVER_IDENTIFICATION.len() - 2)]); // V_S
-                    hash_string(client_kexinit); // I_C
-                    hash_string(server_kexinit); // I_S
-                    hash_string(&ssh_pubkey.to_bytes()); // K_S
-                    let mut hash_mpint = hash_string;
-                    hash_mpint(&dh.e.0); // e
-                    hash_mpint(f.as_bytes()); // f
-                    hash_mpint(k.as_bytes()); // K
+                    let hash_string = |hash: &mut sha2::Sha256, bytes: &[u8]| {
+                        add_hash(hash, &u32::to_be_bytes(bytes.len() as u32));
+                        add_hash(hash, bytes);
+                    };
+                    let hash_mpint = |hash: &mut sha2::Sha256, mut bytes: &[u8]| {
+                        while bytes[0] == 0 {
+                            bytes = &bytes[1..];
+                        }
+                        // If the first high bit is set, pad it with a zero.
+                        let pad_zero = (bytes[0] & 0b10000000) > 1;
+                        add_hash(
+                            hash,
+                            &u32::to_be_bytes((bytes.len() + (pad_zero as usize)) as u32),
+                        );
+                        if pad_zero {
+                            add_hash(hash, &[0]);
+                        }
+                        add_hash(hash, bytes);
+                    };
+
+                    hash_string(
+                        &mut hash,
+                        &client_identification[..(client_identification.len() - 2)],
+                    ); // V_C
+                    hash_string(
+                        &mut hash,
+                        &SERVER_IDENTIFICATION[..(SERVER_IDENTIFICATION.len() - 2)],
+                    ); // V_S
+                    hash_string(&mut hash, client_kexinit); // I_C
+                    hash_string(&mut hash, server_kexinit); // I_S
+                    add_hash(&mut hash, &pub_hostkey.to_bytes()); // K_S
+
+                    // While the RFC says that e and f are mpints, we need to *NOT* treat them as mpints here.
+                    // Neither RFC4253 nor RFC8709 mention this.
+                    hash_string(&mut hash, &client_public_key.0); // e
+                    hash_string(&mut hash, server_public_key.as_bytes()); // f
+                    hash_mpint(&mut hash, shared_secret.as_bytes()); // K
 
                     let hash = hash.finalize();
 
                     let host_priv_key = ed25519_dalek::SigningKey::from_bytes(PRIVKEY_BYTES);
-                    assert_eq!(PUBKEY_BYTES, host_priv_key.verifying_key().as_bytes());
+                    assert_eq!(PUB_HOSTKEY_BYTES, host_priv_key.verifying_key().as_bytes());
 
                     let signature = host_priv_key.sign(&hash);
 
+                    // eprintln!("client_public_key: {:x?}", client_public_key.0);
+                    // eprintln!("server_public_key: {:x?}", server_public_key.as_bytes());
+                    // eprintln!("shared_secret:     {:x?}", shared_secret.as_bytes());
+                    // eprintln!("hash:              {:x?}", hash);
+
                     let packet = DhKeyExchangeInitReplyPacket {
-                        pubkey: ssh_pubkey,
-                        f: MpInt(f.as_bytes()),
+                        pubkey: pub_hostkey,
+                        f: MpInt(server_public_key.as_bytes()),
                         signature: SshSignature {
                             format: b"ssh-ed25519",
                             data: &signature.to_bytes(),
@@ -540,7 +578,7 @@ impl PacketParser {
 const _PUBKEY: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOk5zfpvwNc3MztTTpE90zLI1Ref4AwwRVdSFyJLGbj2 testkey";
 /// Manually extracted, even worse, <https://superuser.com/questions/1477472/openssh-public-key-file-format>, help
-const PUBKEY_BYTES: &[u8; 32] = &[
+const PUB_HOSTKEY_BYTES: &[u8; 32] = &[
     0xe9, 0x39, 0xcd, 0xfa, 0x6f, 0xc0, 0xd7, 0x37, 0x33, 0x3b, 0x53, 0x4e, 0x91, 0x3d, 0xd3, 0x32,
     0xc8, 0xd5, 0x17, 0x9f, 0xe0, 0x0c, 0x30, 0x45, 0x57, 0x52, 0x17, 0x22, 0x4b, 0x19, 0xb8, 0xf6,
 ];
