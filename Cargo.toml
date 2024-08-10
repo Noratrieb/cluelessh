@@ -8,6 +8,7 @@ edition = "2021"
 
 [dependencies]
 eyre = "0.6.12"
+hex-literal = "0.4.1"
 ssh-transport = { path = "./ssh-transport" }
 
 tokio = { version = "1.39.2", features = ["full"] }

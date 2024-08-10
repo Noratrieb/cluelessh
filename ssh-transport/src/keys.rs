@@ -1,6 +1,6 @@
 use chacha20::cipher::{KeyInit, KeyIvInit, StreamCipher, StreamCipherSeek};
-use poly1305::universal_hash::UniversalHash;
 use sha2::Digest;
+use subtle::ConstantTimeEq;
 
 use crate::{
     packet::{Packet, RawPacket},
@@ -73,17 +73,18 @@ impl Decryptor for Session {
 
 /// Derive a key from the shared secret K and exchange hash H.
 /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
-fn derive_key<const KEY_LEN: usize>(
-    k: [u8; 32],
-    h: [u8; 32],
-    letter: &str,
-    session_id: [u8; 32],
-) -> [u8; KEY_LEN] {
+fn derive_key(k: [u8; 32], h: [u8; 32], letter: &str, session_id: [u8; 32]) -> [u8; 64] {
     let sha2len = sha2::Sha256::output_size();
+    let mut output = [0; 64];
 
-    let mut output = [0; KEY_LEN];
+    //let mut hash = sha2::Sha256::new();
+    //encode_mpint_for_hash(&k, |data| hash.update(data));
+    //hash.update(h);
+    //hash.update(letter.as_bytes());
+    //hash.update(session_id);
+    //output[..sha2len].copy_from_slice(&hash.finalize());
 
-    for i in 0..(KEY_LEN / sha2len) {
+    for i in 0..(64 / sha2len) {
         let mut hash = sha2::Sha256::new();
         encode_mpint_for_hash(&k, |data| hash.update(data));
         hash.update(h);
@@ -91,8 +92,9 @@ fn derive_key<const KEY_LEN: usize>(
         if i == 0 {
             hash.update(letter.as_bytes());
             hash.update(session_id);
+        } else {
+            hash.update(&output[..(i * sha2len)]);
         }
-        hash.update(&output[..(i * sha2len)]);
 
         output[(i * sha2len)..][..sha2len].copy_from_slice(&hash.finalize())
     }
@@ -135,6 +137,7 @@ impl SshChaCha20Poly1305 {
     }
 
     fn decrypt_len(&self, bytes: &mut [u8], packet_number: u64) {
+        eprintln!("encrypted len: {:x?}", &bytes);
         // <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
         let mut cipher = SshChaCha20::new(&self.header_key, &packet_number.to_be_bytes().into());
         cipher.apply_keystream(bytes);
@@ -156,23 +159,36 @@ impl SshChaCha20Poly1305 {
         //)
         //.map_err(|err| crate::client_error!("failed to decrypt invalid poly1305 MAC: {err}"))?;
 
-        let mut cipher = SshChaCha20::new(&self.main_key2, &packet_number.to_be_bytes().into());
-
-        let mut mac = {
-            let mut poly1305_key = [0; poly1305::KEY_SIZE];
-            cipher.apply_keystream(&mut poly1305_key);
-            poly1305::Poly1305::new(&poly1305_key.into())
-        };
+        let mut cipher = <chacha20::ChaCha20Legacy as chacha20::cipher::KeyIvInit>::new(
+            &self.main_key2,
+            &packet_number.to_be_bytes().into(),
+        );
 
         let tag_offset = bytes.full_packet().len() - 16;
-        let aead_payload = &bytes.full_packet()[..tag_offset];
-        mac.update_padded(aead_payload);
+        let data_to_mac = &bytes.full_packet()[..tag_offset];
+        eprintln!("data_to_mac: {:x?}", &data_to_mac);
+
+        let mac = {
+            let mut poly1305_key = [0; poly1305::KEY_SIZE];
+            cipher.apply_keystream(&mut poly1305_key);
+            poly1305::Poly1305::new(&poly1305_key.into()).compute_unpadded(data_to_mac)
+        };
+
         let read_tag = poly1305::Tag::from_slice(&bytes.full_packet()[tag_offset..]);
 
-        mac.verify(read_tag)
-            .map_err(|err| crate::client_error!("failed to decrypt invalid poly1305 MAC: {err}"))?;
+        eprintln!("expected MAC: {mac:x?}");
+        eprintln!("found    MAC: {read_tag:x?}");
 
-        cipher.seek(1);
+        if !bool::from(mac.ct_eq(read_tag)) {
+            return Err(crate::client_error!(
+                "failed to decrypt: invalid poly1305 MAC"
+            ));
+        }
+
+        //mac.verify(read_tag)
+        //    .map_err(|err| crate::client_error!("failed to decrypt invalid poly1305 MAC: {err}"))?;
+
+        cipher.seek(64);
 
         todo!()
     }

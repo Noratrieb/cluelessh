@@ -249,6 +249,7 @@ name = "fakessh"
 version = "0.1.0"
 dependencies = [
  "eyre",
+ "hex-literal",
  "ssh-transport",
  "tokio",
  "tracing",
@@ -700,6 +701,7 @@ dependencies = [
  "rand",
  "rand_core",
  "sha2",
+ "subtle",
  "tracing",
  "tracing-subscriber",
  "x25519-dalek",

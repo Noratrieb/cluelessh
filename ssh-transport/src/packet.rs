@@ -325,6 +325,8 @@ impl PacketParser {
                 let packet_length = u32::from_be_bytes(len_to_decrypt);
                 let packet_length = packet_length.try_into().unwrap();
 
+                dbg!(packet_length);
+
                 self.packet_length = Some(packet_length);
 
                 // We have the data.
