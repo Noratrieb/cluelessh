@@ -10,7 +10,7 @@ use packet::{
     DhKeyExchangeInitPacket, DhKeyExchangeInitReplyPacket, KeyExchangeInitPacket, Packet,
     PacketTransport, SshPublicKey, SshSignature,
 };
-use parse::{MpInt, NameList, Parser};
+use parse::{MpInt, NameList, Parser, Writer};
 use rand::RngCore;
 use sha2::Digest;
 use tracing::{debug, info};
@@ -61,7 +61,9 @@ enum ServerState {
         h: [u8; 32],
         k: [u8; 32],
     },
-    ServiceRequest {},
+    ServiceRequest,
+    // At this point we transfer to <https://datatracker.ietf.org/doc/html/rfc4252>
+    UserAuthRequest,
 }
 
 pub trait SshRng {
@@ -305,7 +307,7 @@ impl ServerConnection {
                     self.state = ServerState::ServiceRequest {};
                     self.packet_transport.set_key(h, k);
                 }
-                ServerState::ServiceRequest {} => {
+                ServerState::ServiceRequest => {
                     if packet.payload.get(0) != Some(&Packet::SSH_MSG_SERVICE_REQUEST) {
                         return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
                     }
@@ -316,6 +318,20 @@ impl ServerConnection {
                     if service != "ssh-userauth" {
                         return Err(client_error!("only supports ssh-userauth"));
                     }
+
+                    // TODO: encrypt this!
+                    self.queue_msg(MsgKind::Packet(Packet {
+                        payload: {
+                            let mut writer = Writer::new();
+                            writer.u8(Packet::SSH_MSG_SERVICE_ACCEPT);
+                            writer.string(service.as_bytes());
+                            writer.finish()
+                        },
+                    }));
+                    self.state = ServerState::UserAuthRequest;
+                }
+                ServerState::UserAuthRequest => {
+                    todo!()
                 }
             }
         }
