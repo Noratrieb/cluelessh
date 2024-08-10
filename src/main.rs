@@ -1,12 +1,13 @@
 use std::net::SocketAddr;
 
 use eyre::{Context, Result};
-use fakessh::{ServerConnection, SshError, ThreadRngRand};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 use tracing::{error, info};
+
+use ssh_transport::{ServerConnection, SshError, ThreadRngRand};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
