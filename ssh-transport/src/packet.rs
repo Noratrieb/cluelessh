@@ -63,6 +63,7 @@ pub(crate) struct Packet {
     pub(crate) payload: Vec<u8>,
 }
 impl Packet {
+    pub(crate) const SSH_MSG_SERVICE_REQUEST: u8 = 5;
     pub(crate) const SSH_MSG_KEXINIT: u8 = 20;
     pub(crate) const SSH_MSG_NEWKEYS: u8 = 21;
     pub(crate) const SSH_MSG_KEXDH_INIT: u8 = 30;
@@ -78,9 +79,10 @@ impl Packet {
         };
         let payload = &bytes[1..][..payload_len];
 
-        if (bytes.len() + 4) % 8 != 0 {
-            return Err(client_error!("full packet length must be multiple of 8"));
-        }
+        // TODO: this fails with OpenSSH client... why?
+        //if (bytes.len() + 4) % 8 != 0 {
+        //    return Err(client_error!("full packet length must be multiple of 8: {}", bytes.len()));
+        //}
 
         Ok(Self {
             payload: payload.to_vec(),
@@ -138,7 +140,7 @@ impl<'a> KeyExchangeInitPacket<'a> {
                 "expected SSH_MSG_KEXINIT packet, found {kind}"
             ));
         }
-        let cookie = c.read_array::<16>()?;
+        let cookie = c.array::<16>()?;
         let kex_algorithms = c.name_list()?;
         let server_host_key_algorithms = c.name_list()?;
         let encryption_algorithms_client_to_server = c.name_list()?;
@@ -258,6 +260,7 @@ impl<'a> DhKeyExchangeInitReplyPacket<'a> {
 
 pub(crate) struct RawPacket {
     len: usize,
+    mac_len: usize,
     raw: Vec<u8>,
 }
 impl RawPacket {
@@ -267,8 +270,9 @@ impl RawPacket {
     pub(crate) fn full_packet(&self) -> &[u8] {
         &self.raw
     }
-    pub(crate) fn into_full_packet(self) -> Vec<u8> {
-        self.raw
+    pub(crate) fn content_mut(&mut self) -> &mut [u8] {
+        let mac_start = self.raw.len() - self.mac_len;
+        &mut self.raw[4..mac_start]
     }
 }
 
@@ -323,9 +327,9 @@ impl PacketParser {
 
                 decrytor.decrypt_len(&mut len_to_decrypt, next_seq_nr);
                 let packet_length = u32::from_be_bytes(len_to_decrypt);
-                let packet_length = packet_length.try_into().unwrap();
+                let packet_length: usize = packet_length.try_into().unwrap();
 
-                dbg!(packet_length);
+                let packet_length = packet_length + decrytor.additional_mac_len();
 
                 self.packet_length = Some(packet_length);
 
@@ -347,6 +351,7 @@ impl PacketParser {
                 consumed,
                 RawPacket {
                     raw: std::mem::take(&mut self.raw_data),
+                    mac_len: decrytor.additional_mac_len(),
                     len: packet_length,
                 },
             )))

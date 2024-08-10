@@ -10,9 +10,10 @@ use packet::{
     DhKeyExchangeInitPacket, DhKeyExchangeInitReplyPacket, KeyExchangeInitPacket, Packet,
     PacketTransport, SshPublicKey, SshSignature,
 };
-use parse::{MpInt, NameList};
+use parse::{MpInt, NameList, Parser};
 use rand::RngCore;
 use sha2::Digest;
+use tracing::{debug, info};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 #[derive(Debug)]
@@ -304,7 +305,18 @@ impl ServerConnection {
                     self.state = ServerState::ServiceRequest {};
                     self.packet_transport.set_key(h, k);
                 }
-                ServerState::ServiceRequest {} => {}
+                ServerState::ServiceRequest {} => {
+                    if packet.payload.get(0) != Some(&Packet::SSH_MSG_SERVICE_REQUEST) {
+                        return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
+                    }
+                    let mut p = Parser::new(&packet.payload[1..]);
+                    let service = p.utf8_string()?;
+                    debug!(?service, "Client requesting service");
+
+                    if service != "ssh-userauth" {
+                        return Err(client_error!("only supports ssh-userauth"));
+                    }
+                }
             }
         }
         Ok(())

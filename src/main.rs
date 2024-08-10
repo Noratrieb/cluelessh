@@ -8,14 +8,19 @@ use tokio::{
 use tracing::{error, info};
 
 use ssh_transport::{ServerConnection, SshError, ThreadRngRand};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    tracing_subscriber::fmt().init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
 
-    let listener = TcpListener::bind("0.0.0.0:2222")
-        .await
-        .wrap_err("binding listener")?;
+    let addr = "0.0.0.0:2222".parse::<SocketAddr>().unwrap();
+
+    info!(?addr, "Starting server");
+
+    let listener = TcpListener::bind(addr).await.wrap_err("binding listener")?;
 
     loop {
         let next = listener.accept().await?;

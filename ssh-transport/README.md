@@ -3,7 +3,8 @@
 Transport layer of SSH.
 
 Based on [RFC 4253 The Secure Shell (SSH) Transport Layer Protocol](https://datatracker.ietf.org/doc/html/rfc4253)
-and [RFC 4251 The Secure Shell (SSH) Protocol Architecture](https://datatracker.ietf.org/doc/html/rfc4251).
+and [RFC 4251 The Secure Shell (SSH) Protocol Architecture](https://datatracker.ietf.org/doc/html/rfc4251)
+and [RFC 4250 The Secure Shell (SSH) Protocol Assigned Numbers](https://datatracker.ietf.org/doc/html/rfc4250).
 
 Other relevant RFCs:
 - [RFC 5649 AES Galois Counter Mode for the Secure Shell Transport Layer Protocol](https://datatracker.ietf.org/doc/html/rfc5647)

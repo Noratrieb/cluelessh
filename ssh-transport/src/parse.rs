@@ -12,16 +12,16 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn u8(&mut self) -> Result<u8> {
-        let arr = self.read_array::<1>()?;
+        let arr = self.array::<1>()?;
         Ok(arr[0])
     }
 
     pub(crate) fn u32(&mut self) -> Result<u32> {
-        let arr = self.read_array()?;
+        let arr = self.array()?;
         Ok(u32::from_be_bytes(arr))
     }
 
-    pub(crate) fn read_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         if self.0.len() < N {
             return Err(crate::client_error!("packet too short"));
         }
@@ -30,7 +30,7 @@ impl<'a> Parser<'a> {
         Ok(result)
     }
 
-    pub(crate) fn read_slice(&mut self, len: usize) -> Result<&'a [u8]> {
+    pub(crate) fn slice(&mut self, len: usize) -> Result<&'a [u8]> {
         if self.0.len() < len {
             return Err(crate::client_error!("packet too short"));
         }
@@ -49,18 +49,27 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn name_list(&mut self) -> Result<NameList<'a>> {
-        let len = self.u32()?;
-        let list = self.read_slice(len.try_into().unwrap())?;
-        let Ok(list) = str::from_utf8(list) else {
-            return Err(crate::client_error!("name-list is invalid UTF-8"));
-        };
+        let list = self.utf8_string()?;
         Ok(NameList(list))
     }
 
     pub(crate) fn mpint(&mut self) -> Result<MpInt<'a>> {
-        let len = self.u32()?;
-        let data = self.read_slice(len as usize)?;
+        let data = self.string()?;
         Ok(MpInt(data))
+    }
+
+    pub(crate) fn string(&mut self) -> Result<&'a [u8]> {
+        let len = self.u32()?;
+        let data = self.slice(len.try_into().unwrap())?;
+        Ok(data)
+    }
+
+    pub(crate) fn utf8_string(&mut self) -> Result<&'a str> {
+        let s = self.string()?;
+        let Ok(s) = str::from_utf8(s) else {
+            return Err(crate::client_error!("name-list is invalid UTF-8"));
+        };
+        Ok(s)
     }
 }
 

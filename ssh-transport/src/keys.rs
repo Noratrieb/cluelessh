@@ -16,6 +16,7 @@ pub(crate) struct Session {
 pub(crate) trait Decryptor: Send + Sync + 'static {
     fn decrypt_len(&mut self, bytes: &mut [u8; 4], packet_number: u64);
     fn decrypt_packet(&mut self, raw_packet: RawPacket, packet_number: u64) -> Result<Packet>;
+    fn additional_mac_len(&self) -> usize;
     fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) -> Result<(), ()>;
 }
 
@@ -24,6 +25,9 @@ impl Decryptor for Plaintext {
     fn decrypt_len(&mut self, _: &mut [u8; 4], _: u64) {}
     fn decrypt_packet(&mut self, raw: RawPacket, _: u64) -> Result<Packet> {
         Packet::from_raw(&raw.rest())
+    }
+    fn additional_mac_len(&self) -> usize {
+        0
     }
     fn rekey(&mut self, _: [u8; 32], _: [u8; 32]) -> Result<(), ()> {
         Err(())
@@ -63,6 +67,10 @@ impl Decryptor for Session {
     fn decrypt_packet(&mut self, bytes: RawPacket, packet_number: u64) -> Result<Packet> {
         self.encryption_key_client_to_server
             .decrypt_packet(bytes, packet_number)
+    }
+
+    fn additional_mac_len(&self) -> usize {
+        poly1305::BLOCK_SIZE
     }
 
     fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) -> Result<(), ()> {
@@ -120,53 +128,33 @@ type SshChaCha20 = chacha20::ChaCha20Legacy;
 
 struct SshChaCha20Poly1305 {
     header_key: chacha20::Key,
-    main_key2: chacha20::Key,
-    main_key:
-        chacha20poly1305::ChaChaPoly1305<chacha20::ChaCha20Legacy, chacha20::cipher::typenum::U8>,
+    main_key: chacha20::Key,
 }
 
 impl SshChaCha20Poly1305 {
     fn new(key: [u8; 64]) -> Self {
         Self {
-            main_key2: <[u8; 32]>::try_from(&key[..32]).unwrap().into(),
-            main_key: chacha20poly1305::ChaChaPoly1305::new(
-                &<[u8; 32]>::try_from(&key[..32]).unwrap().into(),
-            ),
+            main_key: <[u8; 32]>::try_from(&key[..32]).unwrap().into(),
             header_key: <[u8; 32]>::try_from(&key[32..]).unwrap().into(),
         }
     }
 
     fn decrypt_len(&self, bytes: &mut [u8], packet_number: u64) {
-        eprintln!("encrypted len: {:x?}", &bytes);
         // <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
         let mut cipher = SshChaCha20::new(&self.header_key, &packet_number.to_be_bytes().into());
         cipher.apply_keystream(bytes);
     }
 
-    fn decrypt_packet(&mut self, bytes: RawPacket, packet_number: u64) -> Result<Packet> {
+    fn decrypt_packet(&mut self, mut bytes: RawPacket, packet_number: u64) -> Result<Packet> {
         // <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
 
-        //let mut aead_payload = bytes.into_full_packet();
-        //let mut associated_data = [0; 4];
-        //associated_data.copy_from_slice(&aead_payload[0..4]);
-        //aead_payload.splice(0..4, []);
-
-        //chacha20poly1305::AeadInPlace::decrypt_in_place(
-        //    &self.main_key,
-        //    &packet_number.to_be_bytes().into(),
-        //    &associated_data,
-        //    &mut aead_payload,
-        //)
-        //.map_err(|err| crate::client_error!("failed to decrypt invalid poly1305 MAC: {err}"))?;
-
-        let mut cipher = <chacha20::ChaCha20Legacy as chacha20::cipher::KeyIvInit>::new(
-            &self.main_key2,
+        let mut cipher = <SshChaCha20 as chacha20::cipher::KeyIvInit>::new(
+            &self.main_key,
             &packet_number.to_be_bytes().into(),
         );
 
         let tag_offset = bytes.full_packet().len() - 16;
         let data_to_mac = &bytes.full_packet()[..tag_offset];
-        eprintln!("data_to_mac: {:x?}", &data_to_mac);
 
         let mac = {
             let mut poly1305_key = [0; poly1305::KEY_SIZE];
@@ -176,20 +164,17 @@ impl SshChaCha20Poly1305 {
 
         let read_tag = poly1305::Tag::from_slice(&bytes.full_packet()[tag_offset..]);
 
-        eprintln!("expected MAC: {mac:x?}");
-        eprintln!("found    MAC: {read_tag:x?}");
-
         if !bool::from(mac.ct_eq(read_tag)) {
             return Err(crate::client_error!(
                 "failed to decrypt: invalid poly1305 MAC"
             ));
         }
 
-        //mac.verify(read_tag)
-        //    .map_err(|err| crate::client_error!("failed to decrypt invalid poly1305 MAC: {err}"))?;
-
         cipher.seek(64);
 
-        todo!()
+        let encrypted_packet_content = bytes.content_mut();
+        cipher.apply_keystream(encrypted_packet_content);
+
+        Packet::from_raw(encrypted_packet_content)
     }
 }
