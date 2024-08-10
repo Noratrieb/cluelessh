@@ -68,7 +68,7 @@ impl Packet {
     pub(crate) const SSH_MSG_KEXDH_INIT: u8 = 30;
     pub(crate) const SSH_MSG_KEXDH_REPLY: u8 = 31;
 
-    fn from_raw(bytes: &[u8]) -> Result<Self> {
+    pub(crate) fn from_raw(bytes: &[u8]) -> Result<Self> {
         let Some(padding_length) = bytes.get(0) else {
             return Err(client_error!("empty packet"));
         };
@@ -256,18 +256,33 @@ impl<'a> DhKeyExchangeInitReplyPacket<'a> {
     }
 }
 
+pub(crate) struct RawPacket {
+    len: usize,
+    raw: Vec<u8>,
+}
+impl RawPacket {
+    pub(crate) fn rest(&self) -> &[u8] {
+        &self.raw[4..]
+    }
+    pub(crate) fn full_packet(&self) -> &[u8] {
+        &self.raw
+    }
+    pub(crate) fn into_full_packet(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
 struct PacketParser {
     // The length of the packet.
     packet_length: Option<usize>,
-    // Before we've read the length fully, this stores the length.
-    // Afterwards, this stores the packet data *after* the length.
-    data: Vec<u8>,
+    // The raw data *encrypted*, including the length.
+    raw_data: Vec<u8>,
 }
 impl PacketParser {
     fn new() -> Self {
         Self {
             packet_length: None,
-            data: Vec::new(),
+            raw_data: Vec::new(),
         }
     }
     fn recv_bytes(
@@ -276,37 +291,39 @@ impl PacketParser {
         decrytor: &mut dyn Decryptor,
         next_seq_nr: u64,
     ) -> Result<Option<(usize, Packet)>> {
-        let Some((consumed, mut data)) = self.recv_bytes_inner(bytes, decrytor, next_seq_nr)?
-        else {
+        let Some((consumed, data)) = self.recv_bytes_inner(bytes, decrytor, next_seq_nr)? else {
             return Ok(None);
         };
-        decrytor.decrypt_packet(&mut data, next_seq_nr);
-        Ok(Some((consumed, Packet::from_raw(&data)?)))
+        let packet = decrytor.decrypt_packet(data, next_seq_nr)?;
+        Ok(Some((consumed, packet)))
     }
     fn recv_bytes_inner(
         &mut self,
         mut bytes: &[u8],
         decrytor: &mut dyn Decryptor,
         next_seq_nr: u64,
-    ) -> Result<Option<(usize, Vec<u8>)>> {
+    ) -> Result<Option<(usize, RawPacket)>> {
         let mut consumed = 0;
         let packet_length = match self.packet_length {
-            Some(packet_length) => packet_length,
+            Some(packet_length) => {
+                assert!(self.raw_data.len() >= 4);
+                packet_length
+            }
             None => {
-                let remaining_len = std::cmp::min(bytes.len(), 4 - self.data.len());
+                let remaining_len = std::cmp::min(bytes.len(), 4 - self.raw_data.len());
                 // Try to read the bytes of the length.
-                self.data.extend_from_slice(&bytes[..remaining_len]);
-                if self.data.len() < 4 {
+                self.raw_data.extend_from_slice(&bytes[..remaining_len]);
+                if self.raw_data.len() < 4 {
                     // Not enough data yet :(.
                     return Ok(None);
                 }
 
-                let mut encrypted_len = self.data.as_slice().try_into().unwrap();
-                decrytor.decrypt_len(&mut encrypted_len, next_seq_nr);
+                let mut len_to_decrypt = [0_u8; 4];
+                len_to_decrypt.copy_from_slice(self.raw_data.as_slice());
 
-                let packet_length = u32::from_be_bytes(encrypted_len);
+                decrytor.decrypt_len(&mut len_to_decrypt, next_seq_nr);
+                let packet_length = u32::from_be_bytes(len_to_decrypt);
                 let packet_length = packet_length.try_into().unwrap();
-                self.data.clear();
 
                 self.packet_length = Some(packet_length);
 
@@ -318,19 +335,25 @@ impl PacketParser {
             }
         };
 
-        let remaining_len = std::cmp::min(bytes.len(), packet_length - self.data.len());
-        self.data.extend_from_slice(&bytes[..remaining_len]);
+        let remaining_len = std::cmp::min(bytes.len(), packet_length - (self.raw_data.len() - 4));
+        self.raw_data.extend_from_slice(&bytes[..remaining_len]);
         consumed += remaining_len;
 
-        if self.data.len() == packet_length {
+        if (self.raw_data.len() - 4) == packet_length {
             // We have the full data.
-            Ok(Some((consumed, std::mem::take(&mut self.data))))
+            Ok(Some((
+                consumed,
+                RawPacket {
+                    raw: std::mem::take(&mut self.raw_data),
+                    len: packet_length,
+                },
+            )))
         } else {
             Ok(None)
         }
     }
     #[cfg(test)]
-    fn test_recv_bytes(&mut self, bytes: &[u8]) -> Option<(usize, Vec<u8>)> {
+    fn test_recv_bytes(&mut self, bytes: &[u8]) -> Option<(usize, RawPacket)> {
         self.recv_bytes_inner(bytes, &mut Plaintext, 0).unwrap()
     }
 }
@@ -356,7 +379,7 @@ mod tests {
         p.test_recv_bytes(&[1]).unwrap_none();
         let (consumed, data) = p.test_recv_bytes(&[2]).unwrap();
         assert_eq!(consumed, 1);
-        assert_eq!(data, &[1, 2]);
+        assert_eq!(data.rest(), &[1, 2]);
     }
 
     #[test]
@@ -369,7 +392,7 @@ mod tests {
         p.test_recv_bytes(&[1]).unwrap_none();
         let (consumed, data) = p.test_recv_bytes(&[2]).unwrap();
         assert_eq!(consumed, 1);
-        assert_eq!(data, &[1, 2]);
+        assert_eq!(data.rest(), &[1, 2]);
     }
 
     #[test]
@@ -377,6 +400,6 @@ mod tests {
         let mut p = PacketParser::new();
         let (consumed, data) = p.test_recv_bytes(&[0, 0, 0, 2, 1, 2]).unwrap();
         assert_eq!(consumed, 6);
-        assert_eq!(data, &[1, 2]);
+        assert_eq!(data.rest(), &[1, 2]);
     }
 }
