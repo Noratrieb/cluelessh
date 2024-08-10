@@ -1,4 +1,4 @@
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+use chacha20::cipher::{KeyInit, KeyIvInit, StreamCipher, StreamCipherSeek};
 use sha2::Digest;
 
 use crate::Result;
@@ -55,7 +55,8 @@ impl Decryptor for Session {
     }
 
     fn decrypt_packet(&mut self, bytes: &mut [u8], packet_number: u64) {
-        self.encryption_key_client_to_server.decrypt_packet(bytes, packet_number);
+        self.encryption_key_client_to_server
+            .decrypt_packet(bytes, packet_number);
     }
 
     fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) -> Result<(), ()> {
@@ -110,28 +111,39 @@ pub(crate) fn encode_mpint_for_hash(mut key: &[u8], mut add_to_hash: impl FnMut(
 type SshChaCha20 = chacha20::ChaCha20Legacy;
 
 struct SshChaCha20Poly1305 {
-    header_key: [u8; 32],
-    main: ChaCha20Poly1305,
+    header_key: chacha20::Key,
+    main_key: chacha20::Key,
 }
 
 impl SshChaCha20Poly1305 {
     fn new(key: [u8; 64]) -> Self {
         Self {
-            main: ChaCha20Poly1305::new(&<[u8; 32]>::try_from(&key[..32]).unwrap().into()),
-            header_key: key[32..].try_into().unwrap(),
+            main_key: <[u8; 32]>::try_from(&key[..32]).unwrap().into(),
+            header_key: <[u8; 32]>::try_from(&key[32..]).unwrap().into(),
         }
     }
 
     fn decrypt_len(&self, bytes: &mut [u8], packet_number: u64) {
-        use chacha20::cipher::{KeyIvInit, StreamCipher};
-
         // <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
-        let mut cipher =
-            SshChaCha20::new(&self.header_key.into(), &packet_number.to_be_bytes().into());
+        let mut cipher = SshChaCha20::new(&self.header_key, &packet_number.to_be_bytes().into());
         cipher.apply_keystream(bytes);
     }
 
     fn decrypt_packet(&mut self, bytes: &mut [u8], packet_number: u64) {
+        // <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
+        let mut cipher = SshChaCha20::new(&self.main_key, &packet_number.to_be_bytes().into());
+
+        let mut poly1305_key = [0; poly1305::KEY_SIZE];
+        cipher.apply_keystream(&mut poly1305_key);
+
+        let total_len = bytes.len();
+        let payload = &mut bytes[..(total_len - 16)];
+
+        // TODO: Compute it over THE LENGTH AS WELL
+        let hash = poly1305::Poly1305::new(&poly1305_key.into()).compute_unpadded(payload);
+
+        cipher.seek(1_u32);
+
         todo!()
     }
 }
