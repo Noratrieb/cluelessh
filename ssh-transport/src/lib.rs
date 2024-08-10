@@ -1,3 +1,4 @@
+mod keys;
 mod packet;
 mod parse;
 
@@ -55,7 +56,10 @@ enum ServerState {
         client_kexinit: Vec<u8>,
         server_kexinit: Vec<u8>,
     },
-    NewKeys,
+    NewKeys {
+        h: [u8; 32],
+        k: [u8; 32],
+    },
     ServiceRequest {},
 }
 
@@ -212,6 +216,7 @@ impl ServerConnection {
                     client_kexinit,
                     server_kexinit,
                 } => {
+                    // TODO: move to keys.rs
                     let dh = DhKeyExchangeInitPacket::parse(&packet.payload)?;
 
                     let secret =
@@ -236,20 +241,8 @@ impl ServerConnection {
                         add_hash(hash, &u32::to_be_bytes(bytes.len() as u32));
                         add_hash(hash, bytes);
                     };
-                    let hash_mpint = |hash: &mut sha2::Sha256, mut bytes: &[u8]| {
-                        while bytes[0] == 0 {
-                            bytes = &bytes[1..];
-                        }
-                        // If the first high bit is set, pad it with a zero.
-                        let pad_zero = (bytes[0] & 0b10000000) > 1;
-                        add_hash(
-                            hash,
-                            &u32::to_be_bytes((bytes.len() + (pad_zero as usize)) as u32),
-                        );
-                        if pad_zero {
-                            add_hash(hash, &[0]);
-                        }
-                        add_hash(hash, bytes);
+                    let hash_mpint = |hash: &mut sha2::Sha256, bytes: &[u8]| {
+                        keys::encode_mpint_for_hash(bytes, |data| add_hash(hash, data));
                     };
 
                     hash_string(
@@ -293,18 +286,23 @@ impl ServerConnection {
                     self.queue_msg(MsgKind::Packet(Packet {
                         payload: packet.to_bytes(),
                     }));
-                    self.state = ServerState::NewKeys;
-                    // TODO: set keys for transport
+                    self.state = ServerState::NewKeys {
+                        h: hash.into(),
+                        k: shared_secret.to_bytes(),
+                    };
                 }
-                ServerState::NewKeys => {
+                ServerState::NewKeys { h, k } => {
                     if packet.payload != &[Packet::SSH_MSG_NEWKEYS] {
                         return Err(client_error!("did not send SSH_MSG_NEWKEYS"));
                     }
+
+                    let (h, k) = (*h, *k);
 
                     self.queue_msg(MsgKind::Packet(Packet {
                         payload: vec![Packet::SSH_MSG_NEWKEYS],
                     }));
                     self.state = ServerState::ServiceRequest {};
+                    self.packet_transport.set_key(h, k);
                 }
                 ServerState::ServiceRequest {} => {}
             }

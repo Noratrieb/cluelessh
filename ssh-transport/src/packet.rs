@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::client_error;
+use crate::keys::Session;
 use crate::parse::{MpInt, NameList, Parser, Writer};
 use crate::Result;
 
@@ -8,11 +9,12 @@ use crate::Result;
 pub(crate) struct PacketTransport {
     state: PacketTransportState,
     packets: VecDeque<Packet>,
+    next_recv_seq_nr: u32,
 }
 
 enum PacketTransportState {
     Plaintext(PacketParser),
-    Keyed { key: () },
+    Keyed { session: Session },
 }
 
 impl PacketTransport {
@@ -20,6 +22,7 @@ impl PacketTransport {
         PacketTransport {
             state: PacketTransportState::Plaintext(PacketParser::new()),
             packets: VecDeque::new(),
+            next_recv_seq_nr: 0,
         }
     }
     pub(crate) fn recv_bytes(&mut self, mut bytes: &[u8]) -> Result<()> {
@@ -34,6 +37,18 @@ impl PacketTransport {
     pub(crate) fn next_packet(&mut self) -> Option<Packet> {
         self.packets.pop_front()
     }
+
+    pub(crate) fn set_key(&mut self, h: [u8; 32], k: [u8; 32]) {
+        match &mut self.state {
+            PacketTransportState::Plaintext(_) => {
+                self.state = PacketTransportState::Keyed {
+                    session: Session::new(h, k),
+                }
+            }
+            PacketTransportState::Keyed { session } => session.rekey(h, k),
+        }
+    }
+
     fn recv_bytes_step(&mut self, bytes: &[u8]) -> Result<Option<usize>> {
         // TODO: This might not work if we buffer two packets where one changes keys in between?
         match &mut self.state {
@@ -41,11 +56,18 @@ impl PacketTransport {
                 let result = packet.recv_bytes(bytes, ())?;
                 if let Some((consumed, result)) = result {
                     self.packets.push_back(result);
+                    self.next_recv_seq_nr = self.next_recv_seq_nr.wrapping_add(1);
                     *packet = PacketParser::new();
                     return Ok(Some(consumed));
                 }
             }
-            PacketTransportState::Keyed { key } => todo!(),
+            PacketTransportState::Keyed { session } => {
+                // TODO: don't yolo?...
+                let encrypted_len = &bytes[..4];
+                // TODO: all of this is nonsense. how does AEAD even work with these partial decryptions?
+                // should i just validate it by hand?? i will find out tomorrow!
+                let decrypted_len = session.decrypt_bytes(encrypted_len)?;
+            }
         }
 
         Ok(None)
