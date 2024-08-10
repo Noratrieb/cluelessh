@@ -9,7 +9,7 @@ use crate::Result;
 pub(crate) struct PacketTransport {
     state: PacketTransportState,
     packets: VecDeque<Packet>,
-    next_recv_seq_nr: u32,
+    next_recv_seq_nr: u64,
 }
 
 enum PacketTransportState {
@@ -62,11 +62,17 @@ impl PacketTransport {
                 }
             }
             PacketTransportState::Keyed { session } => {
-                // TODO: don't yolo?...
-                let encrypted_len = &bytes[..4];
-                // TODO: all of this is nonsense. how does AEAD even work with these partial decryptions?
-                // should i just validate it by hand?? i will find out tomorrow!
-                let decrypted_len = session.decrypt_bytes(encrypted_len)?;
+                let mut len = [0_u8; 4];
+                let Some(len_bytes) = bytes.get(0..4) else {
+                    return Err(client_error!(
+                        "packet too short, not enough bytes for length"
+                    ));
+                };
+                len.copy_from_slice(len_bytes);
+                session.decrypt_len(&mut len, self.next_recv_seq_nr);
+                let len = u32::from_be_bytes(len);
+                dbg!(len);
+                // TODO: dont assume we get it all as one.... AAaAAA
             }
         }
 

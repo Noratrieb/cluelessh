@@ -221,12 +221,12 @@ impl ServerConnection {
 
                     let secret =
                         EphemeralSecret::random_from_rng(SshRngRandAdapter(&mut *self.rng));
-                    let server_public_key = PublicKey::from(&secret); // f
+                    let server_public_key = PublicKey::from(&secret); // Q_S
 
-                    let client_public_key = dh.e; // e
+                    let client_public_key = dh.e; // Q_C
 
                     let shared_secret =
-                        secret.diffie_hellman(&client_public_key.to_x25519_public_key()?); // k
+                        secret.diffie_hellman(&client_public_key.to_x25519_public_key()?); // K
 
                     let pub_hostkey = SshPublicKey {
                         format: b"ssh-ed25519",
@@ -256,11 +256,11 @@ impl ServerConnection {
                     hash_string(&mut hash, client_kexinit); // I_C
                     hash_string(&mut hash, server_kexinit); // I_S
                     add_hash(&mut hash, &pub_hostkey.to_bytes()); // K_S
-
-                    // While the RFC says that e and f are mpints, we need to *NOT* treat them as mpints here.
-                    // Neither RFC4253 nor RFC8709 mention this.
-                    hash_string(&mut hash, &client_public_key.0); // e
-                    hash_string(&mut hash, server_public_key.as_bytes()); // f
+                    // For normal DH as in RFC4253, e and f are mpints.
+                    // But for ECDH as defined in RFC5656, Q_C and Q_S are strings.
+                    // <https://datatracker.ietf.org/doc/html/rfc5656#section-4>
+                    hash_string(&mut hash, &client_public_key.0); // Q_C
+                    hash_string(&mut hash, server_public_key.as_bytes()); // Q_S
                     hash_mpint(&mut hash, shared_secret.as_bytes()); // K
 
                     let hash = hash.finalize();

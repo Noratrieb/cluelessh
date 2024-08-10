@@ -8,12 +8,8 @@ use crate::Result;
 
 pub(crate) struct Session {
     session_id: [u8; 32],
-    client_to_server_iv: [u8; 32],
-    server_to_client_iv: [u8; 32],
-    encryption_key_client_to_server: ChaCha20Poly1305,
-    encryption_key_server_to_client: ChaCha20Poly1305,
-    integrity_key_server_to_client: [u8; 32],
-    integrity_key_client_to_server: [u8; 32],
+    encryption_key_client_to_server: SshChaCha20Poly1305,
+    encryption_key_server_to_client: SshChaCha20Poly1305,
 }
 
 impl Session {
@@ -27,34 +23,56 @@ impl Session {
 
     /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
     fn from_keys(session_id: [u8; 32], h: [u8; 32], k: [u8; 32]) -> Self {
-        let derive = |letter: &str| {
-            let mut hash = sha2::Sha256::new();
-            encode_mpint_for_hash(&k, |data| hash.update(data));
-            hash.update(h);
-            hash.update(letter.as_bytes());
-            hash.update(session_id);
-            hash.finalize()
-        };
-
-        let encryption_key_client_to_server = ChaCha20Poly1305::new(&derive("C"));
-        let encryption_key_server_to_client = ChaCha20Poly1305::new(&derive("D"));
+        let encryption_key_client_to_server =
+            SshChaCha20Poly1305::new(derive_key(k, h, "C", session_id));
+        let encryption_key_server_to_client =
+            SshChaCha20Poly1305::new(derive_key(k, h, "D", session_id));
 
         Self {
             session_id,
-            client_to_server_iv: derive("A").into(),
-            server_to_client_iv: derive("B").into(),
+            // client_to_server_iv: derive("A").into(),
+            // server_to_client_iv: derive("B").into(),
             encryption_key_client_to_server,
             encryption_key_server_to_client,
-            integrity_key_client_to_server: derive("E").into(),
-            integrity_key_server_to_client: derive("F").into(),
+            // integrity_key_client_to_server: derive("E").into(),
+            // integrity_key_server_to_client: derive("F").into(),
         }
     }
 
-    pub(crate) fn decrypt_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn decrypt_len(&mut self, bytes: &mut [u8], packet_number: u64) {
         self.encryption_key_client_to_server
-            .decrypt(&[0; 12].into(), bytes)
-            .map_err(|_| crate::client_error!("failed to decrypt, invalid message"))
+            .decrypt_len(bytes, packet_number);
     }
+}
+
+/// Derive a key from the shared secret K and exchange hash H.
+/// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
+fn derive_key<const KEY_LEN: usize>(
+    k: [u8; 32],
+    h: [u8; 32],
+    letter: &str,
+    session_id: [u8; 32],
+) -> [u8; KEY_LEN] {
+    let sha2len = sha2::Sha256::output_size();
+
+    let mut output = [0; KEY_LEN];
+
+    for i in 0..(KEY_LEN / sha2len) {
+        let mut hash = sha2::Sha256::new();
+        encode_mpint_for_hash(&k, |data| hash.update(data));
+        hash.update(h);
+
+        if i == 0 {
+            hash.update(letter.as_bytes());
+            hash.update(session_id);
+        }
+        hash.update(&output[..(i * sha2len)]);
+
+
+        output[(i * sha2len)..][..sha2len].copy_from_slice(&hash.finalize())
+    }
+
+    output
 }
 
 pub(crate) fn encode_mpint_for_hash(mut key: &[u8], mut add_to_hash: impl FnMut(&[u8])) {
@@ -68,4 +86,30 @@ pub(crate) fn encode_mpint_for_hash(mut key: &[u8], mut add_to_hash: impl FnMut(
         add_to_hash(&[0]);
     }
     add_to_hash(key);
+}
+
+/// `chacha20-poly1305@openssh.com` uses a 64-bit nonce, not the 96-bit one in the IETF version.
+type SshChaCha20 = chacha20::ChaCha20Legacy;
+
+struct SshChaCha20Poly1305 {
+    header_key: [u8; 32],
+    main: ChaCha20Poly1305,
+}
+
+impl SshChaCha20Poly1305 {
+    fn new(key: [u8; 64]) -> Self {
+        Self {
+            main: ChaCha20Poly1305::new(&<[u8; 32]>::try_from(&key[..32]).unwrap().into()),
+            header_key: key[32..].try_into().unwrap(),
+        }
+    }
+
+    fn decrypt_len(&self, bytes: &mut [u8], packet_number: u64) {
+        use chacha20::cipher::{KeyIvInit, StreamCipher};
+
+        // <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
+        let mut cipher =
+            SshChaCha20::new(&self.header_key.into(), &packet_number.to_be_bytes().into());
+        cipher.apply_keystream(bytes);
+    }
 }
