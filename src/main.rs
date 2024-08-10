@@ -62,7 +62,7 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
             }
         }
 
-        while let Some(msg) = state.next_message_to_send() {
+        while let Some(msg) = state.next_msg_to_send() {
             conn.write_all(&msg.to_bytes())
                 .await
                 .wrap_err("writing response")?;

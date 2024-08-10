@@ -8,18 +8,46 @@ use crate::Result;
 /// Frames the byte stream into packets.
 pub(crate) struct PacketTransport {
     decrytor: Box<dyn Decryptor>,
-    next_packet: PacketParser,
-    packets: VecDeque<Packet>,
-    next_recv_seq_nr: u64,
+    recv_next_packet: PacketParser,
+
+    recv_packets: VecDeque<Packet>,
+    recv_next_seq_nr: u64,
+
+    send_packets: VecDeque<Msg>,
+    send_next_seq_nr: u64,
+}
+
+#[derive(Debug)]
+pub struct Msg(pub(crate) MsgKind);
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum MsgKind {
+    ServerProtocolInfo,
+    PlaintextPacket(Packet),
+    EncryptedPacket(EncryptedPacket),
+}
+
+impl Msg {
+    pub fn to_bytes(self) -> Vec<u8> {
+        match self.0 {
+            MsgKind::ServerProtocolInfo => crate::SERVER_IDENTIFICATION.to_vec(),
+            MsgKind::PlaintextPacket(v) => v.to_bytes(),
+            MsgKind::EncryptedPacket(v) => v.to_bytes(),
+        }
+    }
 }
 
 impl PacketTransport {
     pub(crate) fn new() -> Self {
         PacketTransport {
             decrytor: Box::new(Plaintext),
-            next_packet: PacketParser::new(),
-            packets: VecDeque::new(),
-            next_recv_seq_nr: 0,
+            recv_next_packet: PacketParser::new(),
+
+            recv_packets: VecDeque::new(),
+            recv_next_seq_nr: 0,
+
+            send_packets: VecDeque::new(),
+            send_next_seq_nr: 0,
         }
     }
     pub(crate) fn recv_bytes(&mut self, mut bytes: &[u8]) -> Result<()> {
@@ -31,8 +59,16 @@ impl PacketTransport {
         }
         Ok(())
     }
-    pub(crate) fn next_packet(&mut self) -> Option<Packet> {
-        self.packets.pop_front()
+
+    pub(crate) fn recv_next_packet(&mut self) -> Option<Packet> {
+        self.recv_packets.pop_front()
+    }
+
+    pub(crate) fn queue_send_msg(&mut self, msg: Msg) {
+        self.send_packets.push_back(msg);
+    }
+    pub(crate) fn next_msg_to_send(&mut self) -> Option<Msg> {
+        self.send_packets.pop_front()
     }
 
     pub(crate) fn set_key(&mut self, h: [u8; 32], k: [u8; 32]) {
@@ -45,18 +81,34 @@ impl PacketTransport {
         // TODO: This might not work if we buffer two packets where one changes keys in between?
 
         let result =
-            self.next_packet
-                .recv_bytes(bytes, &mut *self.decrytor, self.next_recv_seq_nr)?;
+            self.recv_next_packet
+                .recv_bytes(bytes, &mut *self.decrytor, self.recv_next_seq_nr)?;
         if let Some((consumed, result)) = result {
-            self.packets.push_back(result);
-            self.next_recv_seq_nr = self.next_recv_seq_nr.wrapping_add(1);
-            self.next_packet = PacketParser::new();
+            self.recv_packets.push_back(result);
+            self.recv_next_seq_nr = self.recv_next_seq_nr.wrapping_add(1);
+            self.recv_next_packet = PacketParser::new();
             return Ok(Some(consumed));
         }
 
         Ok(None)
     }
 }
+
+/*
+packet teminology used throughout this crate:
+
+length | padding_length | payload | random padding | MAC
+
+-------------------------------------------------------- "full"
+         ----------------------------------------------- "rest"
+                          -------                        "payload"
+         -----------------------------------------       "content"
+--------------------------------------------------       "authenticated"
+
+^^^^^^ encrypted using K2
+                                                     ^^^^ plaintext
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ encrypted using K1
+*/
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct Packet {
@@ -112,6 +164,19 @@ impl Packet {
         assert!(new.len() % 8 == 0);
 
         new
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct EncryptedPacket {
+    data: Vec<u8>,
+}
+impl EncryptedPacket {
+    pub(crate) fn to_bytes(self) -> Vec<u8> {
+        self.data
+    }
+    pub(crate) fn from_encrypted_full_bytes(data: Vec<u8>) -> Self {
+        Self { data }
     }
 }
 

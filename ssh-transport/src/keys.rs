@@ -154,12 +154,12 @@ impl SshChaCha20Poly1305 {
         );
 
         let tag_offset = bytes.full_packet().len() - 16;
-        let data_to_mac = &bytes.full_packet()[..tag_offset];
+        let authenticated = &bytes.full_packet()[..tag_offset];
 
         let mac = {
             let mut poly1305_key = [0; poly1305::KEY_SIZE];
             cipher.apply_keystream(&mut poly1305_key);
-            poly1305::Poly1305::new(&poly1305_key.into()).compute_unpadded(data_to_mac)
+            poly1305::Poly1305::new(&poly1305_key.into()).compute_unpadded(authenticated)
         };
 
         let read_tag = poly1305::Tag::from_slice(&bytes.full_packet()[tag_offset..]);
