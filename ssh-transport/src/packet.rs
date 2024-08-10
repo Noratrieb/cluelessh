@@ -1,26 +1,23 @@
 use std::collections::VecDeque;
 
 use crate::client_error;
-use crate::keys::Session;
+use crate::keys::{Decryptor, Plaintext, Session};
 use crate::parse::{MpInt, NameList, Parser, Writer};
 use crate::Result;
 
 /// Frames the byte stream into packets.
 pub(crate) struct PacketTransport {
-    state: PacketTransportState,
+    decrytor: Box<dyn Decryptor>,
+    next_packet: PacketParser,
     packets: VecDeque<Packet>,
     next_recv_seq_nr: u64,
-}
-
-enum PacketTransportState {
-    Plaintext(PacketParser),
-    Keyed { session: Session },
 }
 
 impl PacketTransport {
     pub(crate) fn new() -> Self {
         PacketTransport {
-            state: PacketTransportState::Plaintext(PacketParser::new()),
+            decrytor: Box::new(Plaintext),
+            next_packet: PacketParser::new(),
             packets: VecDeque::new(),
             next_recv_seq_nr: 0,
         }
@@ -39,41 +36,22 @@ impl PacketTransport {
     }
 
     pub(crate) fn set_key(&mut self, h: [u8; 32], k: [u8; 32]) {
-        match &mut self.state {
-            PacketTransportState::Plaintext(_) => {
-                self.state = PacketTransportState::Keyed {
-                    session: Session::new(h, k),
-                }
-            }
-            PacketTransportState::Keyed { session } => session.rekey(h, k),
+        if let Err(()) = self.decrytor.rekey(h, k) {
+            self.decrytor = Box::new(Session::new(h, k));
         }
     }
 
     fn recv_bytes_step(&mut self, bytes: &[u8]) -> Result<Option<usize>> {
         // TODO: This might not work if we buffer two packets where one changes keys in between?
-        match &mut self.state {
-            PacketTransportState::Plaintext(packet) => {
-                let result = packet.recv_bytes(bytes, ())?;
-                if let Some((consumed, result)) = result {
-                    self.packets.push_back(result);
-                    self.next_recv_seq_nr = self.next_recv_seq_nr.wrapping_add(1);
-                    *packet = PacketParser::new();
-                    return Ok(Some(consumed));
-                }
-            }
-            PacketTransportState::Keyed { session } => {
-                let mut len = [0_u8; 4];
-                let Some(len_bytes) = bytes.get(0..4) else {
-                    return Err(client_error!(
-                        "packet too short, not enough bytes for length"
-                    ));
-                };
-                len.copy_from_slice(len_bytes);
-                session.decrypt_len(&mut len, self.next_recv_seq_nr);
-                let len = u32::from_be_bytes(len);
-                dbg!(len);
-                // TODO: dont assume we get it all as one.... AAaAAA
-            }
+
+        let result =
+            self.next_packet
+                .recv_bytes(bytes, &mut *self.decrytor, self.next_recv_seq_nr)?;
+        if let Some((consumed, result)) = result {
+            self.packets.push_back(result);
+            self.next_recv_seq_nr = self.next_recv_seq_nr.wrapping_add(1);
+            self.next_packet = PacketParser::new();
+            return Ok(Some(consumed));
         }
 
         Ok(None)
@@ -292,13 +270,25 @@ impl PacketParser {
             data: Vec::new(),
         }
     }
-    fn recv_bytes(&mut self, bytes: &[u8], mac: ()) -> Result<Option<(usize, Packet)>> {
-        let Some((consumed, data)) = self.recv_bytes_inner(bytes, mac)? else {
+    fn recv_bytes(
+        &mut self,
+        bytes: &[u8],
+        decrytor: &mut dyn Decryptor,
+        next_seq_nr: u64,
+    ) -> Result<Option<(usize, Packet)>> {
+        let Some((consumed, mut data)) = self.recv_bytes_inner(bytes, decrytor, next_seq_nr)?
+        else {
             return Ok(None);
         };
+        decrytor.decrypt_packet(&mut data, next_seq_nr);
         Ok(Some((consumed, Packet::from_raw(&data)?)))
     }
-    fn recv_bytes_inner(&mut self, mut bytes: &[u8], _mac: ()) -> Result<Option<(usize, Vec<u8>)>> {
+    fn recv_bytes_inner(
+        &mut self,
+        mut bytes: &[u8],
+        decrytor: &mut dyn Decryptor,
+        next_seq_nr: u64,
+    ) -> Result<Option<(usize, Vec<u8>)>> {
         let mut consumed = 0;
         let packet_length = match self.packet_length {
             Some(packet_length) => packet_length,
@@ -311,7 +301,10 @@ impl PacketParser {
                     return Ok(None);
                 }
 
-                let packet_length = u32::from_be_bytes(self.data.as_slice().try_into().unwrap());
+                let mut encrypted_len = self.data.as_slice().try_into().unwrap();
+                decrytor.decrypt_len(&mut encrypted_len, next_seq_nr);
+
+                let packet_length = u32::from_be_bytes(encrypted_len);
                 let packet_length = packet_length.try_into().unwrap();
                 self.data.clear();
 
@@ -337,8 +330,8 @@ impl PacketParser {
         }
     }
     #[cfg(test)]
-    fn test_recv_bytes(&mut self, bytes: &[u8], mac: ()) -> Option<(usize, Vec<u8>)> {
-        self.recv_bytes_inner(bytes, mac).unwrap()
+    fn test_recv_bytes(&mut self, bytes: &[u8]) -> Option<(usize, Vec<u8>)> {
+        self.recv_bytes_inner(bytes, &mut Plaintext, 0).unwrap()
     }
 }
 
@@ -359,9 +352,9 @@ mod tests {
     #[test]
     fn packet_parser() {
         let mut p = PacketParser::new();
-        p.test_recv_bytes(&2_u32.to_be_bytes(), ()).unwrap_none();
-        p.test_recv_bytes(&[1], ()).unwrap_none();
-        let (consumed, data) = p.test_recv_bytes(&[2], ()).unwrap();
+        p.test_recv_bytes(&2_u32.to_be_bytes()).unwrap_none();
+        p.test_recv_bytes(&[1]).unwrap_none();
+        let (consumed, data) = p.test_recv_bytes(&[2]).unwrap();
         assert_eq!(consumed, 1);
         assert_eq!(data, &[1, 2]);
     }
@@ -370,11 +363,11 @@ mod tests {
     fn packet_parser_split_len() {
         let mut p = PacketParser::new();
         let len = &2_u32.to_be_bytes();
-        p.test_recv_bytes(&len[0..2], ()).unwrap_none();
-        p.test_recv_bytes(&len[2..4], ()).unwrap_none();
+        p.test_recv_bytes(&len[0..2]).unwrap_none();
+        p.test_recv_bytes(&len[2..4]).unwrap_none();
 
-        p.test_recv_bytes(&[1], ()).unwrap_none();
-        let (consumed, data) = p.test_recv_bytes(&[2], ()).unwrap();
+        p.test_recv_bytes(&[1]).unwrap_none();
+        let (consumed, data) = p.test_recv_bytes(&[2]).unwrap();
         assert_eq!(consumed, 1);
         assert_eq!(data, &[1, 2]);
     }
@@ -382,7 +375,7 @@ mod tests {
     #[test]
     fn packet_parser_all() {
         let mut p = PacketParser::new();
-        let (consumed, data) = p.test_recv_bytes(&[0, 0, 0, 2, 1, 2], ()).unwrap();
+        let (consumed, data) = p.test_recv_bytes(&[0, 0, 0, 2, 1, 2]).unwrap();
         assert_eq!(consumed, 6);
         assert_eq!(data, &[1, 2]);
     }

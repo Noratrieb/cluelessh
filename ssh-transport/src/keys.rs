@@ -1,7 +1,4 @@
-use chacha20poly1305::{
-    aead::{Aead, AeadCore},
-    ChaCha20Poly1305, KeyInit,
-};
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use sha2::Digest;
 
 use crate::Result;
@@ -12,13 +9,24 @@ pub(crate) struct Session {
     encryption_key_server_to_client: SshChaCha20Poly1305,
 }
 
+pub(crate) trait Decryptor: Send + Sync + 'static {
+    fn decrypt_len(&mut self, bytes: &mut [u8; 4], packet_number: u64);
+    fn decrypt_packet(&mut self, bytes: &mut [u8], packet_number: u64);
+    fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) -> Result<(), ()>;
+}
+
+pub(crate) struct Plaintext;
+impl Decryptor for Plaintext {
+    fn decrypt_len(&mut self, _: &mut [u8; 4], _: u64) {}
+    fn decrypt_packet(&mut self, _: &mut [u8], _: u64) {}
+    fn rekey(&mut self, _: [u8; 32], _: [u8; 32]) -> Result<(), ()> {
+        Err(())
+    }
+}
+
 impl Session {
     pub(crate) fn new(h: [u8; 32], k: [u8; 32]) -> Self {
         Self::from_keys(h, h, k)
-    }
-
-    pub(crate) fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) {
-        *self = Self::from_keys(self.session_id, h, k);
     }
 
     /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
@@ -38,10 +46,21 @@ impl Session {
             // integrity_key_server_to_client: derive("F").into(),
         }
     }
+}
 
-    pub(crate) fn decrypt_len(&mut self, bytes: &mut [u8], packet_number: u64) {
+impl Decryptor for Session {
+    fn decrypt_len(&mut self, bytes: &mut [u8; 4], packet_number: u64) {
         self.encryption_key_client_to_server
             .decrypt_len(bytes, packet_number);
+    }
+
+    fn decrypt_packet(&mut self, bytes: &mut [u8], packet_number: u64) {
+        self.encryption_key_client_to_server.decrypt_packet(bytes, packet_number);
+    }
+
+    fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) -> Result<(), ()> {
+        *self = Self::from_keys(self.session_id, h, k);
+        Ok(())
     }
 }
 
@@ -67,7 +86,6 @@ fn derive_key<const KEY_LEN: usize>(
             hash.update(session_id);
         }
         hash.update(&output[..(i * sha2len)]);
-
 
         output[(i * sha2len)..][..sha2len].copy_from_slice(&hash.finalize())
     }
@@ -111,5 +129,9 @@ impl SshChaCha20Poly1305 {
         let mut cipher =
             SshChaCha20::new(&self.header_key.into(), &packet_number.to_be_bytes().into());
         cipher.apply_keystream(bytes);
+    }
+
+    fn decrypt_packet(&mut self, bytes: &mut [u8], packet_number: u64) {
+        todo!()
     }
 }
