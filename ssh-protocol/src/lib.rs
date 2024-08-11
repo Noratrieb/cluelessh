@@ -159,7 +159,7 @@ pub mod auth {
                             ));
 
                     self.queue_packet(Packet::new_msg_userauth_failure(
-                        NameList::one("publickey"),
+                        NameList::one("password"),
                         false,
                     ));
                     // Stay in the same state
