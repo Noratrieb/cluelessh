@@ -8,7 +8,7 @@ use tokio::{
 use tracing::{debug, error, info};
 
 use ssh_protocol::{
-    connection::{ChannelOpen, ChannelOperation, ChannelOperationKind, ChannelRequestKind},
+    connection::{ChannelOpen, ChannelOperationKind, ChannelRequestKind},
     transport::{self, ThreadRngRand},
     ChannelUpdateKind, ServerConnection, SshStatus,
 };
@@ -95,8 +95,20 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
                 },
                 ChannelUpdateKind::Request(req) => {
                     match req.kind {
-                        ChannelRequestKind::PtyReq { .. } => {}
-                        ChannelRequestKind::Shell => {}
+                        ChannelRequestKind::PtyReq { .. } => {
+                            if req.want_reply {
+                                state.do_operation(
+                                    update.number.construct_op(ChannelOperationKind::Success),
+                                );
+                            }
+                        }
+                        ChannelRequestKind::Shell => {
+                            if req.want_reply {
+                                state.do_operation(
+                                    update.number.construct_op(ChannelOperationKind::Success),
+                                );
+                            }
+                        }
                     };
                     if req.want_reply {
                         // TODO: sent the reply.
@@ -106,18 +118,13 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
                     let is_eof = data.contains(&0x03 /*EOF, Ctrl-C*/);
 
                     // echo :3
-                    state.do_operation(ChannelOperation {
-                        number: update.number,
-                        kind: ChannelOperationKind::Data(data),
-                    });
+                    state
+                        .do_operation(update.number.construct_op(ChannelOperationKind::Data(data)));
 
                     if is_eof {
                         debug!(channel = ?update.number, "Received EOF, closing channel");
 
-                        state.do_operation(ChannelOperation {
-                            number: update.number,
-                            kind: ChannelOperationKind::Close,
-                        });
+                        state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
                     }
                 }
                 ChannelUpdateKind::ExtendedData { .. } | ChannelUpdateKind::Eof => { /* ignore */ }

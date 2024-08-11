@@ -5,12 +5,16 @@ use ssh_transport::client_error;
 use ssh_transport::packet::Packet;
 use ssh_transport::Result;
 
+/// A channel number (on our side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChannelNumber(pub u32);
+
 pub struct ServerChannelsState {
     packets_to_send: VecDeque<Packet>,
     channel_updates: VecDeque<ChannelUpdate>,
 
-    channels: HashMap<u32, Channel>,
-    next_channel_id: u32,
+    channels: HashMap<ChannelNumber, Channel>,
+    next_channel_id: ChannelNumber,
 }
 
 struct Channel {
@@ -23,7 +27,7 @@ struct Channel {
 /// An update from a channel.
 /// The receiver-equivalent of [`ChannelOperation`].
 pub struct ChannelUpdate {
-    pub number: u32,
+    pub number: ChannelNumber,
     pub kind: ChannelUpdateKind,
 }
 pub enum ChannelUpdateKind {
@@ -56,10 +60,17 @@ pub enum ChannelRequestKind {
     Shell,
 }
 
+impl ChannelNumber {
+    #[must_use]
+    pub fn construct_op(self, kind: ChannelOperationKind) -> ChannelOperation {
+        ChannelOperation { number: self, kind }
+    }
+}
+
 /// An operation to do on a channel.
 /// The sender-equivalent of [`ChannelUpdate`].
 pub struct ChannelOperation {
-    pub number: u32,
+    pub number: ChannelNumber,
     pub kind: ChannelOperationKind,
 }
 
@@ -76,7 +87,7 @@ impl ServerChannelsState {
             packets_to_send: VecDeque::new(),
             channels: HashMap::new(),
             channel_updates: VecDeque::new(),
-            next_channel_id: 0,
+            next_channel_id: ChannelNumber(0),
         }
     }
 
@@ -116,13 +127,14 @@ impl ServerChannelsState {
                 };
 
                 let our_number = self.next_channel_id;
-                self.next_channel_id = self.next_channel_id.checked_add(1).ok_or_else(|| {
-                    client_error!("created too many channels, overflowed the counter")
-                })?;
+                self.next_channel_id =
+                    ChannelNumber(self.next_channel_id.0.checked_add(1).ok_or_else(|| {
+                        client_error!("created too many channels, overflowed the counter")
+                    })?);
 
                 self.packets_to_send
                     .push_back(Packet::new_msg_channel_open_confirmation(
-                        our_number,
+                        our_number.0,
                         sender_channel,
                         initial_window_size,
                         max_packet_size,
@@ -145,6 +157,7 @@ impl ServerChannelsState {
             }
             Packet::SSH_MSG_CHANNEL_DATA => {
                 let our_channel = packet.u32()?;
+                let our_channel = self.validate_channel(our_channel)?;
                 let data = packet.string()?;
 
                 let _ = self.channel(our_channel)?;
@@ -159,6 +172,7 @@ impl ServerChannelsState {
             Packet::SSH_MSG_CHANNEL_CLOSE => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
                 let our_channel = packet.u32()?;
+                let our_channel = self.validate_channel(our_channel)?;
                 let channel = self.channel(our_channel)?;
                 if !channel.we_closed {
                     let close = Packet::new_msg_channel_close(channel.peer_channel);
@@ -176,6 +190,7 @@ impl ServerChannelsState {
             }
             Packet::SSH_MSG_CHANNEL_REQUEST => {
                 let our_channel = packet.u32()?;
+                let our_channel = self.validate_channel(our_channel)?;
                 let request_type = packet.utf8_string()?;
                 let want_reply = packet.bool()?;
 
@@ -286,9 +301,16 @@ impl ServerChannelsState {
             .push_back(Packet::new_msg_channel_failure(recipient_channel));
     }
 
-    fn channel(&mut self, number: u32) -> Result<&mut Channel> {
+    fn validate_channel(&self, number: u32) -> Result<ChannelNumber> {
+        if !self.channels.contains_key(&ChannelNumber(number)) {
+            return Err(client_error!("unknown channel: {number}"));
+        }
+        Ok(ChannelNumber(number))
+    }
+
+    fn channel(&mut self, number: ChannelNumber) -> Result<&mut Channel> {
         self.channels
             .get_mut(&number)
-            .ok_or_else(|| client_error!("unknown channel: {number}"))
+            .ok_or_else(|| client_error!("unknown channel: {number:?}"))
     }
 }
