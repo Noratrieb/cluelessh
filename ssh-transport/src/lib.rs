@@ -1,10 +1,10 @@
 mod channel;
 mod keys;
-mod packet;
-mod parse;
+pub mod packet;
+pub mod parse;
 
 use core::str;
-use std::mem::take;
+use std::{collections::VecDeque, mem::take};
 
 use channel::ServerChannelsState;
 use ed25519_dalek::ed25519::signature::Signer;
@@ -503,12 +503,12 @@ const PRIVKEY_BYTES: &[u8; 32] = &[
     0x0b, 0x9a, 0x4a, 0x44, 0xd5, 0x47, 0xc7, 0x5b, 0x9e, 0x31, 0x7d, 0xa1, 0xd5, 0x75, 0x27, 0x99,
 ];
 
+#[macro_export]
 macro_rules! client_error {
     ($($tt:tt)*) => {
         $crate::SshStatus::ClientError(::std::format!($($tt)*))
     };
 }
-use client_error;
 
 #[cfg(test)]
 mod tests {

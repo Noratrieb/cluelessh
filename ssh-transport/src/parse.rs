@@ -4,24 +4,24 @@ use std::fmt::Debug;
 use crate::Result;
 
 /// A simplified `byteorder` clone that emits client errors when the data is too short.
-pub(crate) struct Parser<'a>(&'a [u8]);
+pub struct Parser<'a>(&'a [u8]);
 
 impl<'a> Parser<'a> {
-    pub(crate) fn new(data: &'a [u8]) -> Self {
+    pub fn new(data: &'a [u8]) -> Self {
         Self(data)
     }
 
-    pub(crate) fn u8(&mut self) -> Result<u8> {
+    pub fn u8(&mut self) -> Result<u8> {
         let arr = self.array::<1>()?;
         Ok(arr[0])
     }
 
-    pub(crate) fn u32(&mut self) -> Result<u32> {
+    pub fn u32(&mut self) -> Result<u32> {
         let arr = self.array()?;
         Ok(u32::from_be_bytes(arr))
     }
 
-    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
+    pub fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         if self.0.len() < N {
             return Err(crate::client_error!("packet too short"));
         }
@@ -30,7 +30,7 @@ impl<'a> Parser<'a> {
         Ok(result)
     }
 
-    pub(crate) fn slice(&mut self, len: usize) -> Result<&'a [u8]> {
+    pub fn slice(&mut self, len: usize) -> Result<&'a [u8]> {
         if self.0.len() < len {
             return Err(crate::client_error!("packet too short"));
         }
@@ -39,7 +39,7 @@ impl<'a> Parser<'a> {
         Ok(result)
     }
 
-    pub(crate) fn bool(&mut self) -> Result<bool> {
+    pub fn bool(&mut self) -> Result<bool> {
         let b = self.u8()?;
         match b {
             0 => Ok(false),
@@ -48,23 +48,23 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn name_list(&mut self) -> Result<NameList<'a>> {
+    pub fn name_list(&mut self) -> Result<NameList<'a>> {
         let list = self.utf8_string()?;
         Ok(NameList(list))
     }
 
-    pub(crate) fn mpint(&mut self) -> Result<MpInt<'a>> {
+    pub fn mpint(&mut self) -> Result<MpInt<'a>> {
         let data = self.string()?;
         Ok(MpInt(data))
     }
 
-    pub(crate) fn string(&mut self) -> Result<&'a [u8]> {
+    pub fn string(&mut self) -> Result<&'a [u8]> {
         let len = self.u32()?;
         let data = self.slice(len.try_into().unwrap())?;
         Ok(data)
     }
 
-    pub(crate) fn utf8_string(&mut self) -> Result<&'a str> {
+    pub fn utf8_string(&mut self) -> Result<&'a str> {
         let s = self.string()?;
         let Ok(s) = str::from_utf8(s) else {
             return Err(crate::client_error!("name-list is invalid UTF-8"));
@@ -74,43 +74,43 @@ impl<'a> Parser<'a> {
 }
 
 /// A simplified `byteorder` clone that emits client errors when the data is too short.
-pub(crate) struct Writer(Vec<u8>);
+pub struct Writer(Vec<u8>);
 
 impl Writer {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(Vec::new())
     }
 
-    pub(crate) fn u8(&mut self, v: u8) {
+    pub fn u8(&mut self, v: u8) {
         self.write(&[v]);
     }
 
-    pub(crate) fn u32(&mut self, v: u32) {
+    pub fn u32(&mut self, v: u32) {
         self.write(&u32::to_be_bytes(v));
     }
 
-    pub(crate) fn write(&mut self, v: &[u8]) {
+    pub fn write(&mut self, v: &[u8]) {
         self.0.extend_from_slice(v);
     }
 
-    pub(crate) fn name_list(&mut self, list: NameList<'_>) {
+    pub fn name_list(&mut self, list: NameList<'_>) {
         self.string(list.0.as_bytes());
     }
 
-    pub(crate) fn mpint(&mut self, mpint: MpInt<'_>) {
+    pub fn mpint(&mut self, mpint: MpInt<'_>) {
         self.string(mpint.0);
     }
 
-    pub(crate) fn string(&mut self, data: &[u8]) {
+    pub fn string(&mut self, data: &[u8]) {
         self.u32(data.len() as u32);
         self.write(data);
     }
 
-    pub(crate) fn bool(&mut self, v: bool) {
+    pub fn bool(&mut self, v: bool) {
         self.u8(v as u8);
     }
 
-    pub(crate) fn finish(self) -> Vec<u8> {
+    pub fn finish(self) -> Vec<u8> {
         self.0
     }
 }

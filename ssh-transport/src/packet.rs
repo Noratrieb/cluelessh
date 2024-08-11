@@ -122,9 +122,10 @@ length | padding_length | payload | random padding | MAC
          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ encrypted using K2
 */
 
+/// A plaintext SSH packet payload.
 #[derive(Debug, PartialEq)]
-pub(crate) struct Packet {
-    pub(crate) payload: Vec<u8>,
+pub struct Packet {
+    pub payload: Vec<u8>,
 }
 impl Packet {
     // -----
@@ -178,7 +179,7 @@ impl Packet {
     pub const SSH_MSG_CHANNEL_SUCCESS: u8 = 99;
     pub const SSH_MSG_CHANNEL_FAILURE: u8 = 100;
 
-    pub(crate) fn from_raw(bytes: &[u8]) -> Result<Self> {
+    pub(crate) fn from_full(bytes: &[u8]) -> Result<Self> {
         let Some(padding_length) = bytes.first() else {
             return Err(client_error!("empty packet"));
         };
@@ -226,7 +227,7 @@ impl Packet {
         new
     }
 
-    pub(crate) fn payload_parser(&self) -> Parser<'_> {
+    pub fn payload_parser(&self) -> Parser<'_> {
         Parser::new(&self.payload)
     }
 }

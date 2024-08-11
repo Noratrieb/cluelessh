@@ -27,7 +27,7 @@ pub(crate) struct Plaintext;
 impl Keys for Plaintext {
     fn decrypt_len(&mut self, _: &mut [u8; 4], _: u64) {}
     fn decrypt_packet(&mut self, raw: RawPacket, _: u64) -> Result<Packet> {
-        Packet::from_raw(raw.rest())
+        Packet::from_full(raw.rest())
     }
     fn encrypt_packet_to_msg(&mut self, packet: Packet, _: u64) -> Msg {
         Msg(MsgKind::PlaintextPacket(packet))
@@ -106,7 +106,7 @@ fn derive_key(k: [u8; 32], h: [u8; 32], letter: &str, session_id: [u8; 32]) -> [
     //output[..sha2len].copy_from_slice(&hash.finalize());
 
     for i in 0..(64 / sha2len) {
-        let mut hash = sha2::Sha256::new();
+        let mut hash = <sha2::Sha256 as sha2::Digest>::new();
         encode_mpint_for_hash(&k, |data| hash.update(data));
         hash.update(h);
 
@@ -193,7 +193,7 @@ impl SshChaCha20Poly1305 {
         let encrypted_packet_content = bytes.content_mut();
         cipher.apply_keystream(encrypted_packet_content);
 
-        Packet::from_raw(encrypted_packet_content)
+        Packet::from_full(encrypted_packet_content)
     }
 
     fn encrypt_packet(&mut self, packet: Packet, packet_number: u64) -> EncryptedPacket {
