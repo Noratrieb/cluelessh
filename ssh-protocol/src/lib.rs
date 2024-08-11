@@ -1,3 +1,6 @@
+pub use ssh_connection as connection;
+use ssh_connection::ChannelOperation;
+pub use ssh_connection::{ChannelUpdate, ChannelUpdateKind};
 pub use ssh_transport as transport;
 pub use ssh_transport::{Result, SshStatus};
 
@@ -30,7 +33,8 @@ impl ServerConnection {
                         self.transport.send_plaintext_packet(to_send);
                     }
                     if auth.is_authenticated() {
-                        self.state = ServerConnectionState::Open(ssh_connection::ServerChannelsState::new());
+                        self.state =
+                            ServerConnectionState::Open(ssh_connection::ServerChannelsState::new());
                     }
                 }
                 ServerConnectionState::Open(con) => {
@@ -47,6 +51,25 @@ impl ServerConnection {
 
     pub fn next_msg_to_send(&mut self) -> Option<ssh_transport::Msg> {
         self.transport.next_msg_to_send()
+    }
+
+    pub fn next_channel_update(&mut self) -> Option<ssh_connection::ChannelUpdate> {
+        match &mut self.state {
+            ServerConnectionState::Auth(_) => None,
+            ServerConnectionState::Open(con) => con.next_channel_update(),
+        }
+    }
+
+    pub fn do_operation(&mut self, op: ChannelOperation) {
+        match &mut self.state {
+            ServerConnectionState::Auth(_) => panic!("tried to get connection during auth"),
+            ServerConnectionState::Open(con) => {
+                con.do_operation(op);
+                for to_send in con.packets_to_send() {
+                    self.transport.send_plaintext_packet(to_send);
+                }
+            }
+        }
     }
 }
 

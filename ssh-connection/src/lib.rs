@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use tracing::{debug, warn};
 
 use ssh_transport::client_error;
@@ -7,39 +7,76 @@ use ssh_transport::Result;
 
 pub struct ServerChannelsState {
     packets_to_send: VecDeque<Packet>,
-    channels: Vec<SessionChannel>,
-
     channel_updates: VecDeque<ChannelUpdate>,
+
+    channels: HashMap<u32, Channel>,
+    next_channel_id: u32,
 }
 
-struct SessionChannel {
+struct Channel {
     /// Whether our side has closed this channel.
     we_closed: bool,
+    /// The channel number for the other side.
     peer_channel: u32,
-    has_pty: bool,
-    has_shell: bool,
-    sent_bytes: Vec<u8>,
 }
 
+/// An update from a channel.
+/// The receiver-equivalent of [`ChannelOperation`].
 pub struct ChannelUpdate {
-    pub channel: u32,
+    pub number: u32,
     pub kind: ChannelUpdateKind,
 }
 pub enum ChannelUpdateKind {
-    Create { kind: String, args: Vec<u8> },
-    Request { kind: String, args: Vec<u8> },
+    Open(ChannelOpen),
+    Request(ChannelRequest),
     Data { data: Vec<u8> },
     ExtendedData { code: u32, data: Vec<u8> },
     Eof,
-    ChannelClosed,
+    Closed,
+}
+
+pub enum ChannelOpen {
+    Session,
+}
+
+pub struct ChannelRequest {
+    pub want_reply: bool,
+    pub kind: ChannelRequestKind,
+}
+
+pub enum ChannelRequestKind {
+    PtyReq {
+        term: String,
+        width_chars: u32,
+        height_rows: u32,
+        width_px: u32,
+        height_px: u32,
+        term_modes: Vec<u8>,
+    },
+    Shell,
+}
+
+/// An operation to do on a channel.
+/// The sender-equivalent of [`ChannelUpdate`].
+pub struct ChannelOperation {
+    pub number: u32,
+    pub kind: ChannelOperationKind,
+}
+
+pub enum ChannelOperationKind {
+    Success,
+    Failure,
+    Data(Vec<u8>),
+    Close,
 }
 
 impl ServerChannelsState {
     pub fn new() -> Self {
         ServerChannelsState {
             packets_to_send: VecDeque::new(),
-            channels: Vec::new(),
+            channels: HashMap::new(),
             channel_updates: VecDeque::new(),
+            next_channel_id: 0,
         }
     }
 
@@ -64,28 +101,8 @@ impl ServerChannelsState {
 
                 debug!(?channel_type, ?sender_channel, "Opening channel");
 
-                match channel_type {
-                    "session" => {
-                        let our_number = self.channels.len() as u32;
-
-                        self.packets_to_send
-                            .push_back(Packet::new_msg_channel_open_confirmation(
-                                our_number,
-                                sender_channel,
-                                initial_window_size,
-                                max_packet_size,
-                            ));
-
-                        self.channels.push(SessionChannel {
-                            we_closed: false,
-                            peer_channel: sender_channel,
-                            has_pty: false,
-                            has_shell: false,
-                            sent_bytes: Vec::new(),
-                        });
-
-                        debug!(?channel_type, ?our_number, "Successfully opened channel");
-                    }
+                let update_message = match channel_type {
+                    "session" => ChannelOpen::Session,
                     _ => {
                         self.packets_to_send
                             .push_back(Packet::new_msg_channel_open_failure(
@@ -94,30 +111,50 @@ impl ServerChannelsState {
                                 b"unknown channel type",
                                 b"",
                             ));
+                        return Ok(());
                     }
-                }
+                };
+
+                let our_number = self.next_channel_id;
+                self.next_channel_id = self.next_channel_id.checked_add(1).ok_or_else(|| {
+                    client_error!("created too many channels, overflowed the counter")
+                })?;
+
+                self.packets_to_send
+                    .push_back(Packet::new_msg_channel_open_confirmation(
+                        our_number,
+                        sender_channel,
+                        initial_window_size,
+                        max_packet_size,
+                    ));
+
+                self.channels.insert(
+                    our_number,
+                    Channel {
+                        we_closed: false,
+                        peer_channel: sender_channel,
+                    },
+                );
+
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_number,
+                    kind: ChannelUpdateKind::Open(update_message),
+                });
+
+                debug!(?channel_type, ?our_number, "Successfully opened channel");
             }
             Packet::SSH_MSG_CHANNEL_DATA => {
                 let our_channel = packet.u32()?;
                 let data = packet.string()?;
 
-                let channel = self.channel(our_channel)?;
-                channel.recv_bytes(data);
+                let _ = self.channel(our_channel)?;
 
-                let peer = channel.peer_channel;
-                // echo :3
-                self.packets_to_send
-                    .push_back(Packet::new_msg_channel_data(peer, data));
-
-                if data.contains(&0x03 /*EOF, Ctrl-C*/) {
-                    debug!(?our_channel, "Received EOF, closing channel");
-                    // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
-                    self.packets_to_send
-                        .push_back(Packet::new_msg_channel_close(peer));
-
-                    let channel = self.channel(our_channel)?;
-                    channel.we_closed = true;
-                }
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_channel,
+                    kind: ChannelUpdateKind::Data {
+                        data: data.to_owned(),
+                    },
+                });
             }
             Packet::SSH_MSG_CHANNEL_CLOSE => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
@@ -128,7 +165,12 @@ impl ServerChannelsState {
                     self.packets_to_send.push_back(close);
                 }
 
-                self.channels.remove(our_channel as usize);
+                self.channels.remove(&our_channel);
+
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_channel,
+                    kind: ChannelUpdateKind::Closed,
+                });
 
                 debug!("Channel has been closed");
             }
@@ -142,14 +184,14 @@ impl ServerChannelsState {
                 let channel = self.channel(our_channel)?;
                 let peer_channel = channel.peer_channel;
 
-                match request_type {
+                let channel_request_kind = match request_type {
                     "pty-req" => {
                         let term = packet.utf8_string()?;
                         let width_chars = packet.u32()?;
                         let height_rows = packet.u32()?;
-                        let _width_px = packet.u32()?;
-                        let _height_px = packet.u32()?;
-                        let _term_modes = packet.string()?;
+                        let width_px = packet.u32()?;
+                        let height_px = packet.u32()?;
+                        let term_modes = packet.string()?;
 
                         debug!(
                             ?our_channel,
@@ -159,37 +201,41 @@ impl ServerChannelsState {
                             "Trying to open a terminal"
                         );
 
-                        // Faithfully allocate the PTY.
-                        channel.has_pty = true;
-
-                        if want_reply {
-                            self.send_channel_success(peer_channel);
+                        ChannelRequestKind::PtyReq {
+                            term: term.to_owned(),
+                            width_chars,
+                            height_rows,
+                            width_px,
+                            height_px,
+                            term_modes: term_modes.to_owned(),
                         }
                     }
                     "shell" => {
-                        if !channel.has_pty {
-                            self.send_channel_failure(peer_channel);
-                        }
-
-                        // Sure! (reborrow)
-                        let channel = self.channel(our_channel)?;
-                        channel.has_shell = true;
+                        let _ = self.channel(our_channel)?;
 
                         debug!(?our_channel, "Opening shell");
 
-                        if want_reply {
-                            self.send_channel_success(peer_channel);
-                        }
+                        ChannelRequestKind::Shell
                     }
                     "signal" => {
                         debug!(?our_channel, "Received signal");
                         // Ignore signals, something we can do.
+                        return Ok(());
                     }
                     _ => {
                         warn!(?request_type, ?our_channel, "Unknown channel request");
                         self.send_channel_failure(peer_channel);
+                        return Ok(());
                     }
-                }
+                };
+
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_channel,
+                    kind: ChannelUpdateKind::Request(ChannelRequest {
+                        want_reply,
+                        kind: channel_request_kind,
+                    }),
+                })
             }
             _ => {
                 todo!("{packet_type}");
@@ -203,8 +249,31 @@ impl ServerChannelsState {
         self.packets_to_send.drain(..)
     }
 
-    pub(crate) fn channel_updates(&mut self) -> impl Iterator<Item = ChannelUpdate> + '_ {
-        self.channel_updates.drain(..)
+    pub fn next_channel_update(&mut self) -> Option<ChannelUpdate> {
+        self.channel_updates.pop_front()
+    }
+
+    pub fn do_operation(&mut self, op: ChannelOperation) {
+        let peer = self
+            .channel(op.number)
+            .expect("passed channel ID that does not exist")
+            .peer_channel;
+        match op.kind {
+            ChannelOperationKind::Success => self.send_channel_success(peer),
+            ChannelOperationKind::Failure => self.send_channel_failure(peer),
+            ChannelOperationKind::Data(data) => {
+                self.packets_to_send
+                    .push_back(Packet::new_msg_channel_data(peer, &data));
+            }
+            ChannelOperationKind::Close => {
+                // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
+                self.packets_to_send
+                    .push_back(Packet::new_msg_channel_close(peer));
+
+                let channel = self.channel(op.number).unwrap();
+                channel.we_closed = true;
+            }
+        }
     }
 
     fn send_channel_success(&mut self, recipient_channel: u32) {
@@ -217,15 +286,9 @@ impl ServerChannelsState {
             .push_back(Packet::new_msg_channel_failure(recipient_channel));
     }
 
-    fn channel(&mut self, number: u32) -> Result<&mut SessionChannel> {
+    fn channel(&mut self, number: u32) -> Result<&mut Channel> {
         self.channels
-            .get_mut(number as usize)
+            .get_mut(&number)
             .ok_or_else(|| client_error!("unknown channel: {number}"))
-    }
-}
-
-impl SessionChannel {
-    fn recv_bytes(&mut self, bytes: &[u8]) {
-        self.sent_bytes.extend_from_slice(bytes);
     }
 }

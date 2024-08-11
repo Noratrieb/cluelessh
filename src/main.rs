@@ -1,15 +1,16 @@
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 
 use eyre::{Context, Result};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use ssh_protocol::{
+    connection::{ChannelOpen, ChannelOperation, ChannelOperationKind, ChannelRequestKind},
     transport::{self, ThreadRngRand},
-    ServerConnection, SshStatus,
+    ChannelUpdateKind, ServerConnection, SshStatus,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -58,6 +59,8 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
 
     let mut state = ServerConnection::new(transport::ServerConnection::new(ThreadRngRand));
 
+    let mut session_channels = HashMap::new();
+
     loop {
         let mut buf = [0; 1024];
         let read = conn
@@ -79,6 +82,47 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
                 }
                 SshStatus::Disconnect => {
                     return Ok(());
+                }
+            }
+        }
+
+        while let Some(update) = state.next_channel_update() {
+            match update.kind {
+                ChannelUpdateKind::Open(kind) => match kind {
+                    ChannelOpen::Session => {
+                        session_channels.insert(update.number, 0);
+                    }
+                },
+                ChannelUpdateKind::Request(req) => {
+                    match req.kind {
+                        ChannelRequestKind::PtyReq { .. } => {}
+                        ChannelRequestKind::Shell => {}
+                    };
+                    if req.want_reply {
+                        // TODO: sent the reply.
+                    }
+                }
+                ChannelUpdateKind::Data { data } => {
+                    let is_eof = data.contains(&0x03 /*EOF, Ctrl-C*/);
+
+                    // echo :3
+                    state.do_operation(ChannelOperation {
+                        number: update.number,
+                        kind: ChannelOperationKind::Data(data),
+                    });
+
+                    if is_eof {
+                        debug!(channel = ?update.number, "Received EOF, closing channel");
+
+                        state.do_operation(ChannelOperation {
+                            number: update.number,
+                            kind: ChannelOperationKind::Close,
+                        });
+                    }
+                }
+                ChannelUpdateKind::ExtendedData { .. } | ChannelUpdateKind::Eof => { /* ignore */ }
+                ChannelUpdateKind::Closed => {
+                    session_channels.remove(&update.number);
                 }
             }
         }
