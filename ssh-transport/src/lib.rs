@@ -406,8 +406,8 @@ impl ServerConnection {
 
                             let mut banner = Writer::new();
                             banner.u8(Packet::SSH_MSG_USERAUTH_BANNER);
-                            banner.string(b"this system ONLY allows catgirls to enter.\r\nall other attempts WILL be prosecuted to the full extent of the rawr!!\r\n");
-                            banner.string(b"en-US");
+                            banner.string(b"!! this system ONLY allows catgirls to enter !!\r\n!! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n");
+                            banner.string(b"en_US");
                             self.packet_transport.queue_packet(Packet {
                                 payload: banner.finish(),
                             });
@@ -431,6 +431,9 @@ impl ServerConnection {
                         // Connection-related packets
                         90..128 => {
                             con.on_packet(packet_type, payload)?;
+                            for packet in con.packets_to_send() {
+                                self.packet_transport.queue_packet(packet);
+                            }
                         }
                         Packet::SSH_MSG_GLOBAL_REQUEST => {
                             let request_name = payload.utf8_string()?;
