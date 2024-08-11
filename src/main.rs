@@ -40,6 +40,19 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
 
     info!(?addr, "Received a new connection");
 
+    //let rng = vec![
+    //    0x14, 0xa2, 0x04, 0xa5, 0x4b, 0x2f, 0x5f, 0xa7, 0xff, 0x53, 0x13, 0x67, 0x57, 0x67, 0xbc,
+    //    0x55, 0x3f, 0xc0, 0x6c, 0x0d, 0x07, 0x8f, 0xe2, 0x75, 0x95, 0x18, 0x4b, 0xd2, 0xcb, 0xd0,
+    //    0x64, 0x06,
+    //];
+    //struct HardcodedRng(Vec<u8>);
+    //impl ssh_transport::SshRng for HardcodedRng {
+    //    fn fill_bytes(&mut self, dest: &mut [u8]) {
+    //        dest.copy_from_slice(&self.0[..dest.len()]);
+    //        self.0.splice(0..dest.len(), []);
+    //    }
+    //}
+
     let mut state = ServerConnection::new(ThreadRngRand);
 
     loop {

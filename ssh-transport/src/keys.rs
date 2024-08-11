@@ -27,7 +27,7 @@ pub(crate) struct Plaintext;
 impl Keys for Plaintext {
     fn decrypt_len(&mut self, _: &mut [u8; 4], _: u64) {}
     fn decrypt_packet(&mut self, raw: RawPacket, _: u64) -> Result<Packet> {
-        Packet::from_raw(&raw.rest())
+        Packet::from_raw(raw.rest())
     }
     fn encrypt_packet_to_msg(&mut self, packet: Packet, _: u64) -> Msg {
         Msg(MsgKind::PlaintextPacket(packet))
@@ -196,8 +196,6 @@ impl SshChaCha20Poly1305 {
     fn encrypt_packet(&mut self, packet: Packet, packet_number: u64) -> EncryptedPacket {
         let mut bytes = packet.to_bytes(false);
 
-        dbg!(u32::from_be_bytes(bytes[0..4].try_into().unwrap()));
-
         // Prepare the main cipher.
         let mut main_cipher = <SshChaCha20 as chacha20::cipher::KeyIvInit>::new(
             &self.main_key,
@@ -223,11 +221,8 @@ impl SshChaCha20Poly1305 {
 
         // Now, MAC the length || content, and push that to the end.
         let mac = poly1305::Poly1305::new(&poly1305_key.into()).compute_unpadded(&bytes);
-        dbg!(bytes.len());
 
         bytes.extend_from_slice(&mac);
-
-        dbg!(bytes.len());
 
         EncryptedPacket::from_encrypted_full_bytes(bytes)
     }

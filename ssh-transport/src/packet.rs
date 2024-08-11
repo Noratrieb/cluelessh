@@ -32,7 +32,7 @@ impl Msg {
         match self.0 {
             MsgKind::ServerProtocolInfo => crate::SERVER_IDENTIFICATION.to_vec(),
             MsgKind::PlaintextPacket(v) => v.to_bytes(true),
-            MsgKind::EncryptedPacket(v) => v.to_bytes(),
+            MsgKind::EncryptedPacket(v) => v.into_bytes(),
         }
     }
 }
@@ -135,16 +135,16 @@ impl Packet {
     pub(crate) const SSH_MSG_KEXDH_REPLY: u8 = 31;
 
     pub(crate) fn from_raw(bytes: &[u8]) -> Result<Self> {
-        let Some(padding_length) = bytes.get(0) else {
+        let Some(padding_length) = bytes.first() else {
             return Err(client_error!("empty packet"));
         };
-        // TODO: mac?
+
         let Some(payload_len) = (bytes.len() - 1).checked_sub(*padding_length as usize) else {
             return Err(client_error!("packet padding longer than packet"));
         };
         let payload = &bytes[1..][..payload_len];
 
-        // TODO: this fails with OpenSSH client... why?
+        // TODO: handle the annoying decryption special case differnt where its +0 instead of +4
         //if (bytes.len() + 4) % 8 != 0 {
         //    return Err(client_error!("full packet length must be multiple of 8: {}", bytes.len()));
         //}
@@ -188,7 +188,7 @@ pub(crate) struct EncryptedPacket {
     data: Vec<u8>,
 }
 impl EncryptedPacket {
-    pub(crate) fn to_bytes(self) -> Vec<u8> {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.data
     }
     pub(crate) fn from_encrypted_full_bytes(data: Vec<u8>) -> Self {
@@ -307,8 +307,8 @@ impl SshPublicKey<'_> {
         data.u32((4 + self.format.len() + 4 + self.data.len()) as u32);
         // ed25519-specific!
         // <https://datatracker.ietf.org/doc/html/rfc8709#section-4>
-        data.string(&self.format);
-        data.string(&self.data);
+        data.string(self.format);
+        data.string(self.data);
         data.finish()
     }
 }
@@ -334,14 +334,13 @@ impl<'a> DhKeyExchangeInitReplyPacket<'a> {
 
         data.u32((4 + self.signature.format.len() + 4 + self.signature.data.len()) as u32);
         // <https://datatracker.ietf.org/doc/html/rfc8709#section-6>
-        data.string(&self.signature.format);
-        data.string(&self.signature.data);
+        data.string(self.signature.format);
+        data.string(self.signature.data);
         data.finish()
     }
 }
 
 pub(crate) struct RawPacket {
-    pub len: usize,
     pub mac_len: usize,
     pub raw: Vec<u8>,
 }
@@ -434,7 +433,6 @@ impl PacketParser {
                 RawPacket {
                     raw: std::mem::take(&mut self.raw_data),
                     mac_len: keys.additional_mac_len(),
-                    len: packet_length,
                 },
             )))
         } else {

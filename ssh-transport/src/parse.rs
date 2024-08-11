@@ -44,7 +44,7 @@ impl<'a> Parser<'a> {
         match b {
             0 => Ok(false),
             1 => Ok(true),
-            _ => return Err(crate::client_error!("invalid bool: {b}")),
+            _ => Err(crate::client_error!("invalid bool: {b}")),
         }
     }
 
@@ -141,7 +141,7 @@ impl Debug for NameList<'_> {
 pub struct MpInt<'a>(pub(crate) &'a [u8]);
 
 impl<'a> MpInt<'a> {
-    pub(crate) fn to_x25519_public_key(&self) -> Result<x25519_dalek::PublicKey> {
+    pub(crate) fn as_x25519_public_key(&self) -> Result<x25519_dalek::PublicKey> {
         let Ok(arr) = <[u8; 32]>::try_from(self.0) else {
             return Err(crate::client_error!(
                 "invalid x25519 public key length, should be 32, was: {}",
