@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 
 use crate::client_error;
-use crate::keys::{Decryptor, Plaintext, Session};
+use crate::keys::{Keys, Plaintext, Session};
 use crate::parse::{MpInt, NameList, Parser, Writer};
 use crate::Result;
 
 /// Frames the byte stream into packets.
 pub(crate) struct PacketTransport {
-    decrytor: Box<dyn Decryptor>,
+    keys: Box<dyn Keys>,
     recv_next_packet: PacketParser,
 
     recv_packets: VecDeque<Packet>,
@@ -31,7 +31,7 @@ impl Msg {
     pub fn to_bytes(self) -> Vec<u8> {
         match self.0 {
             MsgKind::ServerProtocolInfo => crate::SERVER_IDENTIFICATION.to_vec(),
-            MsgKind::PlaintextPacket(v) => v.to_bytes(),
+            MsgKind::PlaintextPacket(v) => v.to_bytes(true),
             MsgKind::EncryptedPacket(v) => v.to_bytes(),
         }
     }
@@ -40,7 +40,7 @@ impl Msg {
 impl PacketTransport {
     pub(crate) fn new() -> Self {
         PacketTransport {
-            decrytor: Box::new(Plaintext),
+            keys: Box::new(Plaintext),
             recv_next_packet: PacketParser::new(),
 
             recv_packets: VecDeque::new(),
@@ -60,29 +60,12 @@ impl PacketTransport {
         Ok(())
     }
 
-    pub(crate) fn recv_next_packet(&mut self) -> Option<Packet> {
-        self.recv_packets.pop_front()
-    }
-
-    pub(crate) fn queue_send_msg(&mut self, msg: Msg) {
-        self.send_packets.push_back(msg);
-    }
-    pub(crate) fn next_msg_to_send(&mut self) -> Option<Msg> {
-        self.send_packets.pop_front()
-    }
-
-    pub(crate) fn set_key(&mut self, h: [u8; 32], k: [u8; 32]) {
-        if let Err(()) = self.decrytor.rekey(h, k) {
-            self.decrytor = Box::new(Session::new(h, k));
-        }
-    }
-
     fn recv_bytes_step(&mut self, bytes: &[u8]) -> Result<Option<usize>> {
         // TODO: This might not work if we buffer two packets where one changes keys in between?
 
         let result =
             self.recv_next_packet
-                .recv_bytes(bytes, &mut *self.decrytor, self.recv_next_seq_nr)?;
+                .recv_bytes(bytes, &mut *self.keys, self.recv_next_seq_nr)?;
         if let Some((consumed, result)) = result {
             self.recv_packets.push_back(result);
             self.recv_next_seq_nr = self.recv_next_seq_nr.wrapping_add(1);
@@ -91,6 +74,35 @@ impl PacketTransport {
         }
 
         Ok(None)
+    }
+
+    pub(crate) fn queue_packet(&mut self, packet: Packet) {
+        let seq_nr = self.send_next_seq_nr;
+        self.send_next_seq_nr = self.send_next_seq_nr.wrapping_add(1);
+        let msg = self.keys.encrypt_packet_to_msg(packet, seq_nr);
+        self.queue_send_msg(msg);
+    }
+
+    pub(crate) fn queue_send_protocol_info(&mut self) {
+        self.queue_send_msg(Msg(MsgKind::ServerProtocolInfo));
+    }
+
+    pub(crate) fn recv_next_packet(&mut self) -> Option<Packet> {
+        self.recv_packets.pop_front()
+    }
+
+    // Private: Make sure all sending goes through variant-specific functions here.
+    fn queue_send_msg(&mut self, msg: Msg) {
+        self.send_packets.push_back(msg);
+    }
+    pub(crate) fn next_msg_to_send(&mut self) -> Option<Msg> {
+        self.send_packets.pop_front()
+    }
+
+    pub(crate) fn set_key(&mut self, h: [u8; 32], k: [u8; 32]) {
+        if let Err(()) = self.keys.rekey(h, k) {
+            self.keys = Box::new(Session::new(h, k));
+        }
     }
 }
 
@@ -105,9 +117,9 @@ length | padding_length | payload | random padding | MAC
          -----------------------------------------       "content"
 --------------------------------------------------       "authenticated"
 
-^^^^^^ encrypted using K2
+^^^^^^ encrypted using K1
                                                      ^^^^ plaintext
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ encrypted using K1
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ encrypted using K2
 */
 
 #[derive(Debug, PartialEq)]
@@ -142,26 +154,30 @@ impl Packet {
         })
     }
 
-    pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        let mut new = Vec::new();
+    pub(crate) fn to_bytes(&self, respect_len_for_padding: bool) -> Vec<u8> {
+        let let_bytes = if respect_len_for_padding { 4 } else { 0 };
 
-        let min_full_length = self.payload.len() + 4 + 1;
+        // <https://datatracker.ietf.org/doc/html/rfc4253#section-6>
+        let min_full_length = self.payload.len() + let_bytes + 1;
 
         // The padding must give a factor of 8.
         let min_padding_len = (min_full_length.next_multiple_of(8) - min_full_length) as u8;
         // > There MUST be at least four bytes of padding.
-        // So let's satisfy this by just adding 8. We can always properly randomize it later if desired.
-        let padding_len = min_padding_len + 8;
+        let padding_len = if min_padding_len < 4 {
+            min_padding_len + 8
+        } else {
+            min_padding_len
+        };
 
         let packet_len = self.payload.len() + (padding_len as usize) + 1;
+
+        let mut new = Vec::new();
         new.extend_from_slice(&u32::to_be_bytes(packet_len as u32));
         new.extend_from_slice(&[padding_len]);
         new.extend_from_slice(&self.payload);
         new.extend(std::iter::repeat(0).take(padding_len as usize));
-        // mac...
 
-        assert!((4 + 1 + self.payload.len() + (padding_len as usize)) % 8 == 0);
-        assert!(new.len() % 8 == 0);
+        assert!((let_bytes + 1 + self.payload.len() + (padding_len as usize)) % 8 == 0);
 
         new
     }
@@ -325,9 +341,9 @@ impl<'a> DhKeyExchangeInitReplyPacket<'a> {
 }
 
 pub(crate) struct RawPacket {
-    len: usize,
-    mac_len: usize,
-    raw: Vec<u8>,
+    pub len: usize,
+    pub mac_len: usize,
+    pub raw: Vec<u8>,
 }
 impl RawPacket {
     pub(crate) fn rest(&self) -> &[u8] {
@@ -358,7 +374,7 @@ impl PacketParser {
     fn recv_bytes(
         &mut self,
         bytes: &[u8],
-        decrytor: &mut dyn Decryptor,
+        decrytor: &mut dyn Keys,
         next_seq_nr: u64,
     ) -> Result<Option<(usize, Packet)>> {
         let Some((consumed, data)) = self.recv_bytes_inner(bytes, decrytor, next_seq_nr)? else {
@@ -370,7 +386,7 @@ impl PacketParser {
     fn recv_bytes_inner(
         &mut self,
         mut bytes: &[u8],
-        decrytor: &mut dyn Decryptor,
+        keys: &mut dyn Keys,
         next_seq_nr: u64,
     ) -> Result<Option<(usize, RawPacket)>> {
         let mut consumed = 0;
@@ -391,11 +407,11 @@ impl PacketParser {
                 let mut len_to_decrypt = [0_u8; 4];
                 len_to_decrypt.copy_from_slice(self.raw_data.as_slice());
 
-                decrytor.decrypt_len(&mut len_to_decrypt, next_seq_nr);
+                keys.decrypt_len(&mut len_to_decrypt, next_seq_nr);
                 let packet_length = u32::from_be_bytes(len_to_decrypt);
                 let packet_length: usize = packet_length.try_into().unwrap();
 
-                let packet_length = packet_length + decrytor.additional_mac_len();
+                let packet_length = packet_length + keys.additional_mac_len();
 
                 self.packet_length = Some(packet_length);
 
@@ -417,7 +433,7 @@ impl PacketParser {
                 consumed,
                 RawPacket {
                     raw: std::mem::take(&mut self.raw_data),
-                    mac_len: decrytor.additional_mac_len(),
+                    mac_len: keys.additional_mac_len(),
                     len: packet_length,
                 },
             )))

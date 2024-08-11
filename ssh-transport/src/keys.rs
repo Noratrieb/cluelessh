@@ -3,8 +3,8 @@ use sha2::Digest;
 use subtle::ConstantTimeEq;
 
 use crate::{
-    packet::{Packet, RawPacket},
-    Result,
+    packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
+    Msg, Result,
 };
 
 pub(crate) struct Session {
@@ -13,18 +13,24 @@ pub(crate) struct Session {
     encryption_key_server_to_client: SshChaCha20Poly1305,
 }
 
-pub(crate) trait Decryptor: Send + Sync + 'static {
+pub(crate) trait Keys: Send + Sync + 'static {
     fn decrypt_len(&mut self, bytes: &mut [u8; 4], packet_number: u64);
     fn decrypt_packet(&mut self, raw_packet: RawPacket, packet_number: u64) -> Result<Packet>;
+
+    fn encrypt_packet_to_msg(&mut self, packet: Packet, packet_number: u64) -> Msg;
+
     fn additional_mac_len(&self) -> usize;
     fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) -> Result<(), ()>;
 }
 
 pub(crate) struct Plaintext;
-impl Decryptor for Plaintext {
+impl Keys for Plaintext {
     fn decrypt_len(&mut self, _: &mut [u8; 4], _: u64) {}
     fn decrypt_packet(&mut self, raw: RawPacket, _: u64) -> Result<Packet> {
         Packet::from_raw(&raw.rest())
+    }
+    fn encrypt_packet_to_msg(&mut self, packet: Packet, _: u64) -> Msg {
+        Msg(MsgKind::PlaintextPacket(packet))
     }
     fn additional_mac_len(&self) -> usize {
         0
@@ -58,7 +64,7 @@ impl Session {
     }
 }
 
-impl Decryptor for Session {
+impl Keys for Session {
     fn decrypt_len(&mut self, bytes: &mut [u8; 4], packet_number: u64) {
         self.encryption_key_client_to_server
             .decrypt_len(bytes, packet_number);
@@ -67,6 +73,13 @@ impl Decryptor for Session {
     fn decrypt_packet(&mut self, bytes: RawPacket, packet_number: u64) -> Result<Packet> {
         self.encryption_key_client_to_server
             .decrypt_packet(bytes, packet_number)
+    }
+
+    fn encrypt_packet_to_msg(&mut self, packet: Packet, packet_number: u64) -> Msg {
+        let packet = self
+            .encryption_key_server_to_client
+            .encrypt_packet(packet, packet_number);
+        Msg(MsgKind::EncryptedPacket(packet))
     }
 
     fn additional_mac_len(&self) -> usize {
@@ -170,11 +183,52 @@ impl SshChaCha20Poly1305 {
             ));
         }
 
-        cipher.seek(64);
+        // Advance ChaCha's block counter to 1
+        cipher
+            .seek(<chacha20::ChaCha20LegacyCore as chacha20::cipher::BlockSizeUser>::block_size());
 
         let encrypted_packet_content = bytes.content_mut();
         cipher.apply_keystream(encrypted_packet_content);
 
         Packet::from_raw(encrypted_packet_content)
+    }
+
+    fn encrypt_packet(&mut self, packet: Packet, packet_number: u64) -> EncryptedPacket {
+        let mut bytes = packet.to_bytes(false);
+
+        dbg!(u32::from_be_bytes(bytes[0..4].try_into().unwrap()));
+
+        // Prepare the main cipher.
+        let mut main_cipher = <SshChaCha20 as chacha20::cipher::KeyIvInit>::new(
+            &self.main_key,
+            &packet_number.to_be_bytes().into(),
+        );
+
+        // Get the poly1305 key first, but don't use it yet!
+        // We encrypt-then-mac.
+        let mut poly1305_key = [0; poly1305::KEY_SIZE];
+        main_cipher.apply_keystream(&mut poly1305_key);
+
+        // As the first act of encryption, encrypt the length.
+        // THIS PART IS CORRECT!!!
+        let mut len_cipher =
+            SshChaCha20::new(&self.header_key, &packet_number.to_be_bytes().into());
+        len_cipher.apply_keystream(&mut bytes[..4]);
+
+        // Advance ChaCha's block counter to 1
+        main_cipher
+            .seek(<chacha20::ChaCha20LegacyCore as chacha20::cipher::BlockSizeUser>::block_size());
+        // Encrypt the content of the packet, excluding the length and the MAC, which is not pushed yet.
+        main_cipher.apply_keystream(&mut bytes[4..]);
+
+        // Now, MAC the length || content, and push that to the end.
+        let mac = poly1305::Poly1305::new(&poly1305_key.into()).compute_unpadded(&bytes);
+        dbg!(bytes.len());
+
+        bytes.extend_from_slice(&mac);
+
+        dbg!(bytes.len());
+
+        EncryptedPacket::from_encrypted_full_bytes(bytes)
     }
 }

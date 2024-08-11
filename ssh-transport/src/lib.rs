@@ -7,7 +7,7 @@ use std::mem::take;
 
 use ed25519_dalek::ed25519::signature::Signer;
 use packet::{
-    DhKeyExchangeInitPacket, DhKeyExchangeInitReplyPacket, KeyExchangeInitPacket, MsgKind, Packet,
+    DhKeyExchangeInitPacket, DhKeyExchangeInitReplyPacket, KeyExchangeInitPacket, Packet,
     PacketTransport, SshPublicKey, SshSignature,
 };
 use parse::{MpInt, NameList, Parser, Writer};
@@ -117,7 +117,7 @@ impl ServerConnection {
                 // TODO: care that its SSH 2.0 instead of anythin anything else
                 // The client will not send any more information than this until we respond, so discord the rest of the bytes.
                 let client_identification = received.to_owned();
-                self.queue_send_msg(MsgKind::ServerProtocolInfo);
+                self.packet_transport.queue_send_protocol_info();
                 self.state = ServerState::KeyExchangeInit {
                     client_identification,
                 };
@@ -205,9 +205,9 @@ impl ServerConnection {
 
                     let client_identification = take(client_identification);
                     let server_kexinit_payload = server_kexinit.to_bytes();
-                    self.queue_send_msg(MsgKind::PlaintextPacket(Packet {
+                    self.packet_transport.queue_packet(Packet {
                         payload: server_kexinit_payload.clone(),
-                    }));
+                    });
                     self.state = ServerState::DhKeyInit {
                         client_identification,
                         client_kexinit: packet.payload,
@@ -286,9 +286,9 @@ impl ServerConnection {
                             data: &signature.to_bytes(),
                         },
                     };
-                    self.queue_send_msg(MsgKind::PlaintextPacket(Packet {
+                    self.packet_transport.queue_packet(Packet {
                         payload: packet.to_bytes(),
-                    }));
+                    });
                     self.state = ServerState::NewKeys {
                         h: hash.into(),
                         k: shared_secret.to_bytes(),
@@ -301,9 +301,9 @@ impl ServerConnection {
 
                     let (h, k) = (*h, *k);
 
-                    self.queue_send_msg(MsgKind::PlaintextPacket(Packet {
+                    self.packet_transport.queue_packet(Packet {
                         payload: vec![Packet::SSH_MSG_NEWKEYS],
-                    }));
+                    });
                     self.state = ServerState::ServiceRequest {};
                     self.packet_transport.set_key(h, k);
                 }
@@ -320,14 +320,14 @@ impl ServerConnection {
                     }
 
                     // TODO: encrypt this!
-                    self.queue_send_msg(MsgKind::PlaintextPacket(Packet {
+                    self.packet_transport.queue_packet(Packet {
                         payload: {
                             let mut writer = Writer::new();
                             writer.u8(Packet::SSH_MSG_SERVICE_ACCEPT);
                             writer.string(service.as_bytes());
                             writer.finish()
                         },
-                    }));
+                    });
                     self.state = ServerState::UserAuthRequest;
                 }
                 ServerState::UserAuthRequest => {
@@ -340,10 +340,6 @@ impl ServerConnection {
 
     pub fn next_msg_to_send(&mut self) -> Option<Msg> {
         self.packet_transport.next_msg_to_send()
-    }
-
-    fn queue_send_msg(&mut self, msg: MsgKind) {
-        self.packet_transport.queue_send_msg(Msg(msg));
     }
 }
 
@@ -380,7 +376,7 @@ use client_error;
 mod tests {
     use hex_literal::hex;
 
-    use crate::{MsgKind, ServerConnection, SshRng};
+    use crate::{packet::MsgKind, ServerConnection, SshRng};
 
     struct NoRng;
     impl SshRng for NoRng {
