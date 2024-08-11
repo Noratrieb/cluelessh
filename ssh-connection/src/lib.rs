@@ -61,6 +61,10 @@ pub enum ChannelRequestKind {
     Exec {
         command: Vec<u8>,
     },
+    Env {
+        name: String,
+        value: Vec<u8>,
+    },
 }
 
 impl ChannelNumber {
@@ -165,13 +169,21 @@ impl ServerChannelsState {
                 let our_channel = self.validate_channel(our_channel)?;
                 let data = packet.string()?;
 
-                let _ = self.channel(our_channel)?;
-
                 self.channel_updates.push_back(ChannelUpdate {
                     number: our_channel,
                     kind: ChannelUpdateKind::Data {
                         data: data.to_owned(),
                     },
+                });
+            }
+            Packet::SSH_MSG_CHANNEL_EOF => {
+                // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
+                let our_channel = packet.u32()?;
+                let our_channel = self.validate_channel(our_channel)?;
+
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_channel,
+                    kind: ChannelUpdateKind::Eof,
                 });
             }
             Packet::SSH_MSG_CHANNEL_CLOSE => {
@@ -239,6 +251,17 @@ impl ServerChannelsState {
                         info!(?our_channel, command = ?String::from_utf8_lossy(command), "Executing command");
                         ChannelRequestKind::Exec {
                             command: command.to_owned(),
+                        }
+                    }
+                    "env" => {
+                        let name = packet.utf8_string()?;
+                        let value = packet.string()?;
+
+                        info!(?our_channel, ?name, value = ?String::from_utf8_lossy(value), "Setting environment variable");
+
+                        ChannelRequestKind::Env {
+                            name: name.to_owned(),
+                            value: value.to_owned(),
                         }
                     }
                     "signal" => {

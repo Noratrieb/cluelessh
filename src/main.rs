@@ -112,6 +112,7 @@ async fn handle_connection(
                         ChannelRequestKind::PtyReq { .. } => {}
                         ChannelRequestKind::Shell => {}
                         ChannelRequestKind::Exec { .. } => {}
+                        ChannelRequestKind::Env { .. } => {}
                     };
                     if req.want_reply {
                         state.do_operation(
