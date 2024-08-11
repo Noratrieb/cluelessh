@@ -7,7 +7,10 @@ use tokio::{
 };
 use tracing::{error, info};
 
-use ssh_transport::{ServerConnection, SshStatus, ThreadRngRand};
+use ssh_protocol::{
+    transport::{self, ThreadRngRand},
+    ServerConnection, SshStatus,
+};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -53,7 +56,7 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
     //    }
     //}
 
-    let mut state = ServerConnection::new(ThreadRngRand);
+    let mut state = ServerConnection::new(transport::ServerConnection::new(ThreadRngRand));
 
     loop {
         let mut buf = [0; 1024];
@@ -79,8 +82,6 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
                 }
             }
         }
-
-        while let Some(channel_update) = state.next_channel_update() {}
 
         while let Some(msg) = state.next_msg_to_send() {
             conn.write_all(&msg.to_bytes())

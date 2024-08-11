@@ -1,4 +1,3 @@
-mod channel;
 mod keys;
 pub mod packet;
 pub mod parse;
@@ -6,7 +5,6 @@ pub mod parse;
 use core::str;
 use std::{collections::VecDeque, mem::take};
 
-use channel::ServerChannelsState;
 use ed25519_dalek::ed25519::signature::Signer;
 use packet::{
     DhKeyExchangeInitPacket, DhKeyExchangeInitReplyPacket, KeyExchangeInitPacket, Packet,
@@ -18,7 +16,6 @@ use sha2::Digest;
 use tracing::{debug, info, trace};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
-pub use channel::ChannelUpdate;
 pub use packet::Msg;
 
 #[derive(Debug)]
@@ -52,7 +49,7 @@ pub struct ServerConnection {
     packet_transport: PacketTransport,
     rng: Box<dyn SshRng + Send + Sync>,
 
-    channel_updates: VecDeque<ChannelUpdate>,
+    plaintext_packets: VecDeque<Packet>,
 }
 
 enum ServerState {
@@ -72,14 +69,7 @@ enum ServerState {
         k: [u8; 32],
     },
     ServiceRequest,
-    // At this point we transfer to <https://datatracker.ietf.org/doc/html/rfc4252>
-    UserAuthRequest {
-        /// Whether the client has failed already (by sending the wrong method).
-        // The second failure results in disconnecting.
-        has_failed: bool,
-    },
-    /// The connection has been opened, all connection-related messages are delegated to the connection handler.
-    ConnectionOpen(ServerChannelsState),
+    Open,
 }
 
 pub trait SshRng {
@@ -121,7 +111,8 @@ impl ServerConnection {
             },
             packet_transport: PacketTransport::new(),
             rng: Box::new(rng),
-            channel_updates: VecDeque::new(),
+
+            plaintext_packets: VecDeque::new(),
         }
     }
 }
@@ -343,6 +334,7 @@ impl ServerConnection {
                     self.packet_transport.set_key(h, k);
                 }
                 ServerState::ServiceRequest => {
+                    // TODO: this should probably move out of here? unsure.
                     if packet.payload.first() != Some(&Packet::SSH_MSG_SERVICE_REQUEST) {
                         return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
                     }
@@ -362,107 +354,10 @@ impl ServerConnection {
                             writer.finish()
                         },
                     });
-                    self.state = ServerState::UserAuthRequest { has_failed: false };
+                    self.state = ServerState::Open;
                 }
-                ServerState::UserAuthRequest { has_failed } => {
-                    // This is a super simplistic implementation of RFC4252 SSH authentication.
-                    // We ask for a public key, and always let that one pass.
-                    // The reason for this is that this makes it a lot easier to test locally.
-                    // It's not very good, but it's good enough for now.
-                    let mut auth_req = packet.payload_parser();
-
-                    if auth_req.u8()? != Packet::SSH_MSG_USERAUTH_REQUEST {
-                        return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
-                    }
-                    let username = auth_req.utf8_string()?;
-                    let service_name = auth_req.utf8_string()?;
-                    let method_name = auth_req.utf8_string()?;
-
-                    info!(
-                        ?username,
-                        ?service_name,
-                        ?method_name,
-                        "User trying to authenticate"
-                    );
-
-                    if service_name != "ssh-connection" {
-                        return Err(client_error!(
-                            "client tried to unsupported service: {service_name}"
-                        ));
-                    }
-
-                    match method_name {
-                        "password" => {
-                            let change_password = auth_req.bool()?;
-                            if change_password {
-                                return Err(client_error!(
-                                    "client tried to change password unprompted"
-                                ));
-                            }
-                            let password = auth_req.utf8_string()?;
-
-                            info!(?password, "Got password");
-                            // Don't worry queen, your password is correct!
-                            self.packet_transport
-                                .queue_packet(Packet::new_msg_userauth_success());
-
-                            self.state = ServerState::ConnectionOpen(ServerChannelsState::new());
-                        }
-                        "publickey" => {
-                            info!("Got public key");
-                            // Don't worry queen, your key is correct!
-                            self.packet_transport
-                                .queue_packet(Packet::new_msg_userauth_success());
-                            self.state = ServerState::ConnectionOpen(ServerChannelsState::new());
-                        }
-                        _ if *has_failed => {
-                            return Err(client_error!(
-                                "client tried unsupported method twice: {method_name}"
-                            ));
-                        }
-                        _ => {
-                            // Initial.
-
-                            self.packet_transport.queue_packet(Packet::new_msg_userauth_banner(
-                                b"!! this system ONLY allows catgirls to enter !!\r\n\
-                                !! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n",
-                                b"",
-                            ));
-
-                            self.packet_transport
-                                .queue_packet(Packet::new_msg_userauth_failure(
-                                    NameList::one("publickey"),
-                                    false,
-                                ));
-                            // Stay in the same state
-                        }
-                    }
-                }
-                ServerState::ConnectionOpen(con) => {
-                    let mut payload = packet.payload_parser();
-                    let packet_type = payload.u8()?;
-
-                    match packet_type {
-                        // Connection-related packets
-                        90..128 => {
-                            con.on_packet(packet_type, payload)?;
-                            for packet in con.packets_to_send() {
-                                self.packet_transport.queue_packet(packet);
-                            }
-                            self.channel_updates.extend(con.channel_updates());
-                        }
-                        Packet::SSH_MSG_GLOBAL_REQUEST => {
-                            let request_name = payload.utf8_string()?;
-                            let want_reply = payload.bool()?;
-                            debug!(?request_name, ?want_reply, "Received global request");
-
-                            self.packet_transport
-                                .queue_packet(Packet::new_msg_request_failure());
-                        }
-                        _ => {
-                            todo!("packet: {packet_type}");
-                        }
-                    }
+                ServerState::Open => {
+                    self.plaintext_packets.push_back(packet);
                 }
             }
         }
@@ -473,8 +368,12 @@ impl ServerConnection {
         self.packet_transport.next_msg_to_send()
     }
 
-    pub fn next_channel_update(&mut self) -> Option<ChannelUpdate> {
-        self.channel_updates.pop_front()
+    pub fn next_plaintext_packet(&mut self) -> Option<Packet> {
+        self.plaintext_packets.pop_front()
+    }
+
+    pub fn send_plaintext_packet(&mut self, packet: Packet) {
+        self.packet_transport.queue_packet(packet);
     }
 }
 

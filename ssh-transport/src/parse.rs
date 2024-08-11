@@ -119,16 +119,16 @@ impl Writer {
 pub struct NameList<'a>(&'a str);
 
 impl<'a> NameList<'a> {
-    pub(crate) fn one(item: &'a str) -> Self {
+    pub fn one(item: &'a str) -> Self {
         if item.contains(',') {
             //panic!("tried creating name list with comma in item: {item}");
         }
         Self(item)
     }
-    pub(crate) fn none() -> NameList<'static> {
+    pub fn none() -> NameList<'static> {
         NameList("")
     }
-    pub(crate) fn iter(&self) -> std::str::Split<char> {
+    pub fn iter(&self) -> std::str::Split<char> {
         self.0.split(',')
     }
 }

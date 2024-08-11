@@ -1,5 +1,5 @@
 [workspace]
-members = [ "ssh-transport"]
+members = ["ssh-connection", "ssh-protocol", "ssh-transport"]
 
 [package]
 name = "fakessh"
@@ -9,7 +9,7 @@ edition = "2021"
 [dependencies]
 eyre = "0.6.12"
 hex-literal = "0.4.1"
-ssh-transport = { path = "./ssh-transport" }
+ssh-protocol = { path = "./ssh-protocol" }
 
 tokio = { version = "1.39.2", features = ["full"] }
 tracing = "0.1.40"

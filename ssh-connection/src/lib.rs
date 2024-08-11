@@ -1,12 +1,11 @@
 use std::collections::VecDeque;
 use tracing::{debug, warn};
 
-use crate::client_error;
-use crate::packet::Packet;
-use crate::parse::{Parser, Writer};
-use crate::Result;
+use ssh_transport::client_error;
+use ssh_transport::packet::Packet;
+use ssh_transport::Result;
 
-pub(crate) struct ServerChannelsState {
+pub struct ServerChannelsState {
     packets_to_send: VecDeque<Packet>,
     channels: Vec<SessionChannel>,
 
@@ -26,13 +25,17 @@ pub struct ChannelUpdate {
     pub channel: u32,
     pub kind: ChannelUpdateKind,
 }
-
 pub enum ChannelUpdateKind {
-    ChannelData(Vec<u8>),
+    Create { kind: String, args: Vec<u8> },
+    Request { kind: String, args: Vec<u8> },
+    Data { data: Vec<u8> },
+    ExtendedData { code: u32, data: Vec<u8> },
+    Eof,
+    ChannelClosed,
 }
 
 impl ServerChannelsState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         ServerChannelsState {
             packets_to_send: VecDeque::new(),
             channels: Vec::new(),
@@ -40,14 +43,24 @@ impl ServerChannelsState {
         }
     }
 
-    pub(crate) fn on_packet(&mut self, packet_type: u8, mut payload: Parser<'_>) -> Result<()> {
+    pub fn recv_packet(&mut self, packet: Packet) -> Result<()> {
+        let mut packet = packet.payload_parser();
+        let packet_type = packet.u8()?;
         match packet_type {
+            Packet::SSH_MSG_GLOBAL_REQUEST => {
+                let request_name = packet.utf8_string()?;
+                let want_reply = packet.bool()?;
+                debug!(?request_name, ?want_reply, "Received global request");
+
+                self.packets_to_send
+                    .push_back(Packet::new_msg_request_failure());
+            }
             Packet::SSH_MSG_CHANNEL_OPEN => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.1>
-                let channel_type = payload.utf8_string()?;
-                let sender_channel = payload.u32()?;
-                let initial_window_size = payload.u32()?;
-                let max_packet_size = payload.u32()?;
+                let channel_type = packet.utf8_string()?;
+                let sender_channel = packet.u32()?;
+                let initial_window_size = packet.u32()?;
+                let max_packet_size = packet.u32()?;
 
                 debug!(?channel_type, ?sender_channel, "Opening channel");
 
@@ -85,8 +98,8 @@ impl ServerChannelsState {
                 }
             }
             Packet::SSH_MSG_CHANNEL_DATA => {
-                let our_channel = payload.u32()?;
-                let data = payload.string()?;
+                let our_channel = packet.u32()?;
+                let data = packet.string()?;
 
                 let channel = self.channel(our_channel)?;
                 channel.recv_bytes(data);
@@ -108,7 +121,7 @@ impl ServerChannelsState {
             }
             Packet::SSH_MSG_CHANNEL_CLOSE => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
-                let our_channel = payload.u32()?;
+                let our_channel = packet.u32()?;
                 let channel = self.channel(our_channel)?;
                 if !channel.we_closed {
                     let close = Packet::new_msg_channel_close(channel.peer_channel);
@@ -120,9 +133,9 @@ impl ServerChannelsState {
                 debug!("Channel has been closed");
             }
             Packet::SSH_MSG_CHANNEL_REQUEST => {
-                let our_channel = payload.u32()?;
-                let request_type = payload.utf8_string()?;
-                let want_reply = payload.bool()?;
+                let our_channel = packet.u32()?;
+                let request_type = packet.utf8_string()?;
+                let want_reply = packet.bool()?;
 
                 debug!(?our_channel, ?request_type, "Got channel request");
 
@@ -131,12 +144,12 @@ impl ServerChannelsState {
 
                 match request_type {
                     "pty-req" => {
-                        let term = payload.utf8_string()?;
-                        let width_chars = payload.u32()?;
-                        let height_rows = payload.u32()?;
-                        let _width_px = payload.u32()?;
-                        let _height_px = payload.u32()?;
-                        let _term_modes = payload.string()?;
+                        let term = packet.utf8_string()?;
+                        let width_chars = packet.u32()?;
+                        let height_rows = packet.u32()?;
+                        let _width_px = packet.u32()?;
+                        let _height_px = packet.u32()?;
+                        let _term_modes = packet.string()?;
 
                         debug!(
                             ?our_channel,
@@ -186,7 +199,7 @@ impl ServerChannelsState {
         Ok(())
     }
 
-    pub(crate) fn packets_to_send(&mut self) -> impl Iterator<Item = Packet> + '_ {
+    pub fn packets_to_send(&mut self) -> impl Iterator<Item = Packet> + '_ {
         self.packets_to_send.drain(..)
     }
 

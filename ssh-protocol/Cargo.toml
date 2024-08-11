@@ -1,0 +1,9 @@
+[package]
+name = "ssh-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ssh-connection = { path = "../ssh-connection" }
+ssh-transport = { path = "../ssh-transport" }
+tracing = "0.1.40"
