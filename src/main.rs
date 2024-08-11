@@ -7,7 +7,7 @@ use tokio::{
 };
 use tracing::{error, info};
 
-use ssh_transport::{ServerConnection, SshError, ThreadRngRand};
+use ssh_transport::{ServerConnection, SshStatus, ThreadRngRand};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -67,12 +67,15 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
 
         if let Err(err) = state.recv_bytes(&buf[..read]) {
             match err {
-                SshError::ClientError(err) => {
+                SshStatus::ClientError(err) => {
                     info!(?err, "disconnecting client after invalid operation");
                     return Ok(());
                 }
-                SshError::ServerError(err) => {
+                SshStatus::ServerError(err) => {
                     return Err(err);
+                }
+                SshStatus::Disconnect => {
+                    return Ok(());
                 }
             }
         }

@@ -21,7 +21,10 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 pub use packet::Msg;
 
 #[derive(Debug)]
-pub enum SshError {
+pub enum SshStatus {
+    /// The client has sent a disconnect request, close the connection.
+    /// This is not an error.
+    Disconnect,
     /// The client did something wrong.
     /// The connection should be closed and a notice may be logged,
     /// but this does not require operator intervention.
@@ -32,9 +35,9 @@ pub enum SshError {
     ServerError(eyre::Report),
 }
 
-pub type Result<T, E = SshError> = std::result::Result<T, E>;
+pub type Result<T, E = SshStatus> = std::result::Result<T, E>;
 
-impl From<eyre::Report> for SshError {
+impl From<eyre::Report> for SshStatus {
     fn from(value: eyre::Report) -> Self {
         Self::ServerError(value)
     }
@@ -140,6 +143,23 @@ impl ServerConnection {
 
         while let Some(packet) = self.packet_transport.recv_next_packet() {
             trace!(packet_type = ?packet.payload.get(0), packet_len = ?packet.payload.len(), "Received packet");
+
+            // Handle some packets ignoring the state.
+            match packet.payload.get(0).copied() {
+                Some(Packet::SSH_MSG_DISCONNECT) => {
+                    // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.1>
+                    let mut disconnect = Parser::new(&packet.payload[1..]);
+                    let reason = disconnect.u32()?;
+                    let description = disconnect.utf8_string()?;
+                    let _language_tag = disconnect.utf8_string()?;
+
+                    info!(?reason, ?description, "Client disconnecting");
+
+                    return Ok(());
+                }
+                _ => {}
+            }
+
             match &mut self.state {
                 ServerState::ProtoExchange { .. } => unreachable!("handled above"),
                 ServerState::KeyExchangeInit {
@@ -407,7 +427,7 @@ impl ServerConnection {
                             let mut banner = Writer::new();
                             banner.u8(Packet::SSH_MSG_USERAUTH_BANNER);
                             banner.string(b"!! this system ONLY allows catgirls to enter !!\r\n!! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n");
-                            banner.string(b"en_US");
+                            banner.string(b"");
                             self.packet_transport.queue_packet(Packet {
                                 payload: banner.finish(),
                             });
@@ -442,9 +462,9 @@ impl ServerConnection {
 
                             let mut failure = Writer::new();
                             failure.u8(Packet::SSH_MSG_REQUEST_FAILURE);
-                            //self.packet_transport.queue_packet(Packet {
-                            //    payload: failure.finish(),
-                            //});
+                            self.packet_transport.queue_packet(Packet {
+                                payload: failure.finish(),
+                            });
                         }
                         _ => {
                             todo!("packet: {packet_type}");
@@ -485,7 +505,7 @@ const PRIVKEY_BYTES: &[u8; 32] = &[
 
 macro_rules! client_error {
     ($($tt:tt)*) => {
-        $crate::SshError::ClientError(::std::format!($($tt)*))
+        $crate::SshStatus::ClientError(::std::format!($($tt)*))
     };
 }
 use client_error;

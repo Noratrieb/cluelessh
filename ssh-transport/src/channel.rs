@@ -12,6 +12,8 @@ pub(crate) struct ServerChannelsState {
 }
 
 struct SessionChannel {
+    /// Whether our side has closed this channel.
+    we_closed: bool,
     peer_channel: u32,
     has_pty: bool,
     has_shell: bool,
@@ -49,6 +51,7 @@ impl ServerChannelsState {
                         confirm.u32(max_packet_size);
 
                         self.channels.push(SessionChannel {
+                            we_closed: false,
                             peer_channel: sender_channel,
                             has_pty: false,
                             has_shell: false,
@@ -67,7 +70,7 @@ impl ServerChannelsState {
                         failure.u32(sender_channel);
                         failure.u32(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
                         failure.string(b"unknown channel type");
-                        failure.string(b"en_US");
+                        failure.string(b"");
 
                         self.packets_to_send.push_back(Packet {
                             payload: failure.finish(),
@@ -80,15 +83,54 @@ impl ServerChannelsState {
                 let data = payload.string()?;
 
                 let channel = self.channel(our_channel)?;
+                let peer = channel.peer_channel;
                 channel.recv_bytes(data);
 
                 let mut reply = Writer::new();
                 reply.u8(Packet::SSH_MSG_CHANNEL_DATA);
                 reply.u32(channel.peer_channel);
-                reply.string(data);
+                reply.string(data); // echo :3
                 self.packets_to_send.push_back(Packet {
                     payload: reply.finish(),
                 });
+
+                if data.contains(&0x03 /*EOF, Ctrl-C*/) {
+                    debug!(?our_channel, "Received EOF, closing channel");
+                    // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
+                    let mut eof = Writer::new();
+                    eof.u8(Packet::SSH_MSG_CHANNEL_EOF);
+                    eof.u32(peer);
+                    self.packets_to_send.push_back(Packet {
+                        payload: eof.finish(),
+                    });
+
+                    let mut close = Writer::new();
+                    close.u8(Packet::SSH_MSG_CHANNEL_CLOSE);
+                    close.u32(peer);
+                    self.packets_to_send.push_back(Packet {
+                        payload: close.finish(),
+                    });
+
+                    let channel = self.channel(our_channel)?;
+                    channel.we_closed = true;
+                }
+            }
+            Packet::SSH_MSG_CHANNEL_CLOSE => {
+                // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
+                let our_channel = payload.u32()?;
+                let channel = self.channel(our_channel)?;
+                if !channel.we_closed {
+                    let mut close = Writer::new();
+                    close.u8(Packet::SSH_MSG_CHANNEL_CLOSE);
+                    close.u32(channel.peer_channel);
+                    self.packets_to_send.push_back(Packet {
+                        payload: close.finish(),
+                    });
+                }
+                
+                self.channels.remove(our_channel as usize);
+
+                debug!("Channel has been closed");
             }
             Packet::SSH_MSG_CHANNEL_REQUEST => {
                 let our_channel = payload.u32()?;
