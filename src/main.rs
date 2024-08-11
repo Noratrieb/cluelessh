@@ -22,7 +22,11 @@ async fn main() -> eyre::Result<()> {
         )
         .init();
 
-    let addr = "0.0.0.0:2222".parse::<SocketAddr>().unwrap();
+    let addr = std::env::var("FAKESSH_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:2222".to_owned());
+
+    let addr = addr
+        .parse::<SocketAddr>()
+        .wrap_err_with(|| format!("failed to parse listen addr '{addr}'"))?;
 
     info!(?addr, "Starting server");
 
