@@ -111,7 +111,13 @@ async fn handle_connection(
                     match req.kind {
                         ChannelRequestKind::PtyReq { .. } => {}
                         ChannelRequestKind::Shell => {}
-                        ChannelRequestKind::Exec { .. } => {}
+                        ChannelRequestKind::Exec { command } => {
+                            if command == b"uname -s -v -n -r -m" {
+                                state.do_operation(update.number.construct_op(ChannelOperationKind::Data(
+                                    b"Linux nixos 6.6.35 #1-NixOS SMP PREEMPT_DYNAMIC Fri Jun 21 12:38:50 UTC 2024 x86_64\r\n".to_vec()
+                                )));
+                            }
+                        }
                         ChannelRequestKind::Env { .. } => {}
                     };
                     if req.want_reply {
