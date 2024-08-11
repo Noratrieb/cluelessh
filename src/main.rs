@@ -34,7 +34,7 @@ async fn main() -> eyre::Result<()> {
 
     loop {
         let next = listener.accept().await?;
-        let span = info_span!("connection", ?addr);
+        let span = info_span!("connection", addr = ?next.1);
         tokio::spawn(
             async {
                 let mut total_sent_data = Vec::new();
