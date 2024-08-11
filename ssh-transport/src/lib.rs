@@ -168,7 +168,7 @@ impl ServerConnection {
                                 Ok(expected)
                             } else {
                                 Err(client_error!(
-                                    "client does not supported algorithm {expected}"
+                                    "client does not supported algorithm {expected}. supported: {list:?}",
                                 ))
                             }
                         };
