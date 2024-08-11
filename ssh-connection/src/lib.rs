@@ -95,6 +95,8 @@ impl ServerChannelsState {
     }
 
     pub fn recv_packet(&mut self, packet: Packet) -> Result<()> {
+        // TODO: window
+
         let mut packet = packet.payload_parser();
         let packet_type = packet.u8()?;
         match packet_type {

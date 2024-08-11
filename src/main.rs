@@ -5,7 +5,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, info_span, Instrument};
 
 use ssh_protocol::{
     connection::{ChannelOpen, ChannelOperationKind, ChannelRequestKind},
@@ -34,16 +34,26 @@ async fn main() -> eyre::Result<()> {
 
     loop {
         let next = listener.accept().await?;
+        let span = info_span!("connection", ?addr);
+        tokio::spawn(
+            async {
+                let mut total_sent_data = Vec::new();
 
-        tokio::spawn(async {
-            if let Err(err) = handle_connection(next).await {
-                error!(?err, "error handling connection");
+                if let Err(err) = handle_connection(next, &mut total_sent_data).await {
+                    error!(?err, "error handling connection");
+                }
+
+                info!(data = ?String::from_utf8_lossy(&total_sent_data), "Finished connection");
             }
-        });
+            .instrument(span),
+        );
     }
 }
 
-async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
+async fn handle_connection(
+    next: (TcpStream, SocketAddr),
+    total_sent_data: &mut Vec<u8>,
+) -> Result<()> {
     let (mut conn, addr) = next;
 
     info!(?addr, "Received a new connection");
@@ -94,7 +104,7 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
             match update.kind {
                 ChannelUpdateKind::Open(kind) => match kind {
                     ChannelOpen::Session => {
-                        session_channels.insert(update.number, 0);
+                        session_channels.insert(update.number, ());
                     }
                 },
                 ChannelUpdateKind::Request(req) => {
@@ -113,8 +123,13 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
                     let is_eof = data.contains(&0x03 /*EOF, Ctrl-C*/);
 
                     // echo :3
-                    state
-                        .do_operation(update.number.construct_op(ChannelOperationKind::Data(data)));
+                    // state
+                    //    .do_operation(update.number.construct_op(ChannelOperationKind::Data(data)));
+
+                    // arbitrary limit
+                    if total_sent_data.len() < 500_000 {
+                        total_sent_data.extend_from_slice(&data);
+                    }
 
                     if is_eof {
                         debug!(channel = ?update.number, "Received EOF, closing channel");

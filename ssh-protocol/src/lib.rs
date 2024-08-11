@@ -154,7 +154,9 @@ pub mod auth {
 
                     self.queue_packet(Packet::new_msg_userauth_banner(
                                 b"!! this system ONLY allows catgirls to enter !!\r\n\
-                                !! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n",
+                                !! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n\
+                                !! THIS SYTEM WILL LOG AND STORE YOUR CLEARTEXT PASSWORD !!\r\n\
+                                !! DO NOT ENTER PASSWORDS YOU DON'T WANT STOLEN !!\r\n",
                                 b"",
                             ));
 
