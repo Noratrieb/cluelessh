@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use ssh_transport::client_error;
 use ssh_transport::packet::Packet;
@@ -58,6 +58,9 @@ pub enum ChannelRequestKind {
         term_modes: Vec<u8>,
     },
     Shell,
+    Exec {
+        command: Vec<u8>,
+    },
 }
 
 impl ChannelNumber {
@@ -226,11 +229,15 @@ impl ServerChannelsState {
                         }
                     }
                     "shell" => {
-                        let _ = self.channel(our_channel)?;
-
-                        debug!(?our_channel, "Opening shell");
-
+                        info!(?our_channel, "Opening shell");
                         ChannelRequestKind::Shell
+                    }
+                    "exec" => {
+                        let command = packet.string()?;
+                        info!(?our_channel, command = ?String::from_utf8_lossy(command), "Executing command");
+                        ChannelRequestKind::Exec {
+                            command: command.to_owned(),
+                        }
                     }
                     "signal" => {
                         debug!(?our_channel, "Received signal");

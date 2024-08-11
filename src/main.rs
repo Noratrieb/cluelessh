@@ -95,23 +95,14 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
                 },
                 ChannelUpdateKind::Request(req) => {
                     match req.kind {
-                        ChannelRequestKind::PtyReq { .. } => {
-                            if req.want_reply {
-                                state.do_operation(
-                                    update.number.construct_op(ChannelOperationKind::Success),
-                                );
-                            }
-                        }
-                        ChannelRequestKind::Shell => {
-                            if req.want_reply {
-                                state.do_operation(
-                                    update.number.construct_op(ChannelOperationKind::Success),
-                                );
-                            }
-                        }
+                        ChannelRequestKind::PtyReq { .. } => {}
+                        ChannelRequestKind::Shell => {}
+                        ChannelRequestKind::Exec { .. } => {}
                     };
                     if req.want_reply {
-                        // TODO: sent the reply.
+                        state.do_operation(
+                            update.number.construct_op(ChannelOperationKind::Success),
+                        );
                     }
                 }
                 ChannelUpdateKind::Data { data } => {
