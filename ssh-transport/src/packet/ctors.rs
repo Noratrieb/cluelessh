@@ -1,0 +1,93 @@
+use crate::packet::Packet;
+use crate::parse::Writer;
+
+#[allow(non_camel_case_types)]
+mod ssh_type_to_rust {
+    pub(super) use {bool, u32, u8};
+    pub(super) type string<'a> = &'a [u8];
+    pub(super) type name_list<'a> = crate::parse::NameList<'a>;
+}
+
+macro_rules! ctors {
+    (
+        $(
+            fn $fn_name:ident(
+                $msg_type:ident;
+                $(
+                    $name:ident: $ssh_type:ident
+                ),*
+                $(,)?
+            );
+        )*
+    ) => {
+        impl Packet {
+            $(
+                pub fn $fn_name(
+                    $(
+                        $name: ssh_type_to_rust::$ssh_type
+                    ),*
+                ) -> Packet {
+                    let mut w = Writer::new();
+
+                    w.u8(Packet::$msg_type);
+
+                    $(
+                        w.$ssh_type($name);
+                    )*
+
+                    Packet {
+                        payload: w.finish(),
+                    }
+                }
+            )*
+        }
+    };
+}
+
+ctors! {
+    // -----
+    // Transport layer protocol:
+
+    // 1 to 19 Transport layer generic (e.g., disconnect, ignore, debug, etc.)
+    // 20 to 29 Algorithm negotiation
+    // 30 to 49 Key exchange method specific (numbers can be reused for different authentication methods)
+
+    // -----
+    // User authentication protocol:
+
+    // 50 to 59   User authentication generic
+    fn new_msg_userauth_failure(SSH_MSG_USERAUTH_FAILURE;
+        auth_options: name_list,
+        partial_success: bool,
+    );
+    fn new_msg_userauth_success(SSH_MSG_USERAUTH_SUCCESS;);
+    fn new_msg_userauth_banner(SSH_MSG_USERAUTH_BANNER; msg: string, language_tag: string);
+
+    //  60 to 79   User authentication method specific (numbers can be reused for different authentication methods)
+
+    // -----
+    // Connection protocol:
+
+    // 80 to 89   Connection protocol generic
+    fn new_msg_request_failure(SSH_MSG_REQUEST_FAILURE;);
+
+    // 90 to 127  Channel related messages
+    fn new_msg_channel_open_confirmation(SSH_MSG_CHANNEL_OPEN_CONFIRMATION;
+        peer_channel: u32,
+        sender_channel: u32,
+        initial_window_size: u32,
+        max_packet_size: u32,
+    );
+    fn new_msg_channel_open_failure(SSH_MSG_CHANNEL_OPEN_FAILURE;
+        sender_channe: u32,
+        reason_code: u32,
+        description: string,
+        language_tag: string,
+    );
+    fn new_msg_channel_data(SSH_MSG_CHANNEL_DATA; recipient_channel: u32, data: string);
+
+    fn new_msg_channel_eof(SSH_MSG_CHANNEL_EOF; recipient_channel: u32);
+    fn new_msg_channel_close(SSH_MSG_CHANNEL_CLOSE; recipient_channel: u32);
+    fn new_msg_channel_success(SSH_MSG_CHANNEL_SUCCESS; recipient_channel: u32);
+    fn new_msg_channel_failure(SSH_MSG_CHANNEL_FAILURE; recipient_channel: u32);
+}

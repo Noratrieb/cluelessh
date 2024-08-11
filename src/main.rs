@@ -80,6 +80,8 @@ async fn handle_connection(next: (TcpStream, SocketAddr)) -> Result<()> {
             }
         }
 
+        while let Some(channel_update) = state.next_channel_update() {}
+
         while let Some(msg) = state.next_msg_to_send() {
             conn.write_all(&msg.to_bytes())
                 .await

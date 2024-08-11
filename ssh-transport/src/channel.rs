@@ -9,6 +9,8 @@ use crate::Result;
 pub(crate) struct ServerChannelsState {
     packets_to_send: VecDeque<Packet>,
     channels: Vec<SessionChannel>,
+
+    channel_updates: VecDeque<ChannelUpdate>,
 }
 
 struct SessionChannel {
@@ -20,11 +22,21 @@ struct SessionChannel {
     sent_bytes: Vec<u8>,
 }
 
+pub struct ChannelUpdate {
+    pub channel: u32,
+    pub kind: ChannelUpdateKind,
+}
+
+pub enum ChannelUpdateKind {
+    ChannelData(Vec<u8>),
+}
+
 impl ServerChannelsState {
     pub(crate) fn new() -> Self {
         ServerChannelsState {
             packets_to_send: VecDeque::new(),
             channels: Vec::new(),
+            channel_updates: VecDeque::new(),
         }
     }
 
@@ -43,12 +55,13 @@ impl ServerChannelsState {
                     "session" => {
                         let our_number = self.channels.len() as u32;
 
-                        let mut confirm = Writer::new();
-                        confirm.u8(Packet::SSH_MSG_CHANNEL_OPEN_CONFIRMATION);
-                        confirm.u32(our_number);
-                        confirm.u32(sender_channel);
-                        confirm.u32(initial_window_size);
-                        confirm.u32(max_packet_size);
+                        self.packets_to_send
+                            .push_back(Packet::new_msg_channel_open_confirmation(
+                                our_number,
+                                sender_channel,
+                                initial_window_size,
+                                max_packet_size,
+                            ));
 
                         self.channels.push(SessionChannel {
                             we_closed: false,
@@ -58,23 +71,16 @@ impl ServerChannelsState {
                             sent_bytes: Vec::new(),
                         });
 
-                        self.packets_to_send.push_back(Packet {
-                            payload: confirm.finish(),
-                        });
-
                         debug!(?channel_type, ?our_number, "Successfully opened channel");
                     }
                     _ => {
-                        let mut failure = Writer::new();
-                        failure.u8(Packet::SSH_MSG_CHANNEL_OPEN_FAILURE);
-                        failure.u32(sender_channel);
-                        failure.u32(3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
-                        failure.string(b"unknown channel type");
-                        failure.string(b"");
-
-                        self.packets_to_send.push_back(Packet {
-                            payload: failure.finish(),
-                        });
+                        self.packets_to_send
+                            .push_back(Packet::new_msg_channel_open_failure(
+                                sender_channel,
+                                3, // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
+                                b"unknown channel type",
+                                b"",
+                            ));
                     }
                 }
             }
@@ -83,33 +89,18 @@ impl ServerChannelsState {
                 let data = payload.string()?;
 
                 let channel = self.channel(our_channel)?;
-                let peer = channel.peer_channel;
                 channel.recv_bytes(data);
 
-                let mut reply = Writer::new();
-                reply.u8(Packet::SSH_MSG_CHANNEL_DATA);
-                reply.u32(channel.peer_channel);
-                reply.string(data); // echo :3
-                self.packets_to_send.push_back(Packet {
-                    payload: reply.finish(),
-                });
+                let peer = channel.peer_channel;
+                // echo :3
+                self.packets_to_send
+                    .push_back(Packet::new_msg_channel_data(peer, data));
 
                 if data.contains(&0x03 /*EOF, Ctrl-C*/) {
                     debug!(?our_channel, "Received EOF, closing channel");
                     // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
-                    let mut eof = Writer::new();
-                    eof.u8(Packet::SSH_MSG_CHANNEL_EOF);
-                    eof.u32(peer);
-                    self.packets_to_send.push_back(Packet {
-                        payload: eof.finish(),
-                    });
-
-                    let mut close = Writer::new();
-                    close.u8(Packet::SSH_MSG_CHANNEL_CLOSE);
-                    close.u32(peer);
-                    self.packets_to_send.push_back(Packet {
-                        payload: close.finish(),
-                    });
+                    self.packets_to_send
+                        .push_back(Packet::new_msg_channel_close(peer));
 
                     let channel = self.channel(our_channel)?;
                     channel.we_closed = true;
@@ -120,14 +111,10 @@ impl ServerChannelsState {
                 let our_channel = payload.u32()?;
                 let channel = self.channel(our_channel)?;
                 if !channel.we_closed {
-                    let mut close = Writer::new();
-                    close.u8(Packet::SSH_MSG_CHANNEL_CLOSE);
-                    close.u32(channel.peer_channel);
-                    self.packets_to_send.push_back(Packet {
-                        payload: close.finish(),
-                    });
+                    let close = Packet::new_msg_channel_close(channel.peer_channel);
+                    self.packets_to_send.push_back(close);
                 }
-                
+
                 self.channels.remove(our_channel as usize);
 
                 debug!("Channel has been closed");
@@ -203,22 +190,18 @@ impl ServerChannelsState {
         self.packets_to_send.drain(..)
     }
 
+    pub(crate) fn channel_updates(&mut self) -> impl Iterator<Item = ChannelUpdate> + '_ {
+        self.channel_updates.drain(..)
+    }
+
     fn send_channel_success(&mut self, recipient_channel: u32) {
-        let mut failure = Writer::new();
-        failure.u8(Packet::SSH_MSG_CHANNEL_SUCCESS);
-        failure.u32(recipient_channel);
-        self.packets_to_send.push_back(Packet {
-            payload: failure.finish(),
-        });
+        self.packets_to_send
+            .push_back(Packet::new_msg_channel_success(recipient_channel));
     }
 
     fn send_channel_failure(&mut self, recipient_channel: u32) {
-        let mut failure = Writer::new();
-        failure.u8(Packet::SSH_MSG_CHANNEL_FAILURE);
-        failure.u32(recipient_channel);
-        self.packets_to_send.push_back(Packet {
-            payload: failure.finish(),
-        });
+        self.packets_to_send
+            .push_back(Packet::new_msg_channel_failure(recipient_channel));
     }
 
     fn channel(&mut self, number: u32) -> Result<&mut SessionChannel> {

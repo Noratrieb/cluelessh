@@ -18,6 +18,7 @@ use sha2::Digest;
 use tracing::{debug, info, trace};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
+pub use channel::ChannelUpdate;
 pub use packet::Msg;
 
 #[derive(Debug)]
@@ -50,6 +51,8 @@ pub struct ServerConnection {
     state: ServerState,
     packet_transport: PacketTransport,
     rng: Box<dyn SshRng + Send + Sync>,
+
+    channel_updates: VecDeque<ChannelUpdate>,
 }
 
 enum ServerState {
@@ -118,6 +121,7 @@ impl ServerConnection {
             },
             packet_transport: PacketTransport::new(),
             rng: Box::new(rng),
+            channel_updates: VecDeque::new(),
         }
     }
 }
@@ -399,21 +403,16 @@ impl ServerConnection {
 
                             info!(?password, "Got password");
                             // Don't worry queen, your password is correct!
-                            let mut success = Writer::new();
-                            success.u8(Packet::SSH_MSG_USERAUTH_SUCCESS);
-                            self.packet_transport.queue_packet(Packet {
-                                payload: success.finish(),
-                            });
+                            self.packet_transport
+                                .queue_packet(Packet::new_msg_userauth_success());
+
                             self.state = ServerState::ConnectionOpen(ServerChannelsState::new());
                         }
                         "publickey" => {
                             info!("Got public key");
                             // Don't worry queen, your key is correct!
-                            let mut success = Writer::new();
-                            success.u8(Packet::SSH_MSG_USERAUTH_SUCCESS);
-                            self.packet_transport.queue_packet(Packet {
-                                payload: success.finish(),
-                            });
+                            self.packet_transport
+                                .queue_packet(Packet::new_msg_userauth_success());
                             self.state = ServerState::ConnectionOpen(ServerChannelsState::new());
                         }
                         _ if *has_failed => {
@@ -424,21 +423,17 @@ impl ServerConnection {
                         _ => {
                             // Initial.
 
-                            let mut banner = Writer::new();
-                            banner.u8(Packet::SSH_MSG_USERAUTH_BANNER);
-                            banner.string(b"!! this system ONLY allows catgirls to enter !!\r\n!! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n");
-                            banner.string(b"");
-                            self.packet_transport.queue_packet(Packet {
-                                payload: banner.finish(),
-                            });
+                            self.packet_transport.queue_packet(Packet::new_msg_userauth_banner(
+                                b"!! this system ONLY allows catgirls to enter !!\r\n\
+                                !! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n",
+                                b"",
+                            ));
 
-                            let mut rejection = Writer::new();
-                            rejection.u8(Packet::SSH_MSG_USERAUTH_FAILURE);
-                            rejection.name_list(NameList::one("publickey"));
-                            rejection.bool(false);
-                            self.packet_transport.queue_packet(Packet {
-                                payload: rejection.finish(),
-                            });
+                            self.packet_transport
+                                .queue_packet(Packet::new_msg_userauth_failure(
+                                    NameList::one("publickey"),
+                                    false,
+                                ));
                             // Stay in the same state
                         }
                     }
@@ -454,17 +449,15 @@ impl ServerConnection {
                             for packet in con.packets_to_send() {
                                 self.packet_transport.queue_packet(packet);
                             }
+                            self.channel_updates.extend(con.channel_updates());
                         }
                         Packet::SSH_MSG_GLOBAL_REQUEST => {
                             let request_name = payload.utf8_string()?;
                             let want_reply = payload.bool()?;
                             debug!(?request_name, ?want_reply, "Received global request");
 
-                            let mut failure = Writer::new();
-                            failure.u8(Packet::SSH_MSG_REQUEST_FAILURE);
-                            self.packet_transport.queue_packet(Packet {
-                                payload: failure.finish(),
-                            });
+                            self.packet_transport
+                                .queue_packet(Packet::new_msg_request_failure());
                         }
                         _ => {
                             todo!("packet: {packet_type}");
@@ -478,6 +471,10 @@ impl ServerConnection {
 
     pub fn next_msg_to_send(&mut self) -> Option<Msg> {
         self.packet_transport.next_msg_to_send()
+    }
+
+    pub fn next_channel_update(&mut self) -> Option<ChannelUpdate> {
+        self.channel_updates.pop_front()
     }
 }
 
