@@ -1,3 +1,4 @@
+mod channel;
 mod keys;
 mod packet;
 mod parse;
@@ -5,6 +6,7 @@ mod parse;
 use core::str;
 use std::mem::take;
 
+use channel::ServerChannelsState;
 use ed25519_dalek::ed25519::signature::Signer;
 use packet::{
     DhKeyExchangeInitPacket, DhKeyExchangeInitReplyPacket, KeyExchangeInitPacket, Packet,
@@ -13,7 +15,7 @@ use packet::{
 use parse::{MpInt, NameList, Parser, Writer};
 use rand::RngCore;
 use sha2::Digest;
-use tracing::debug;
+use tracing::{debug, info, trace};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 pub use packet::Msg;
@@ -26,6 +28,7 @@ pub enum SshError {
     ClientError(String),
     /// Something went wrong on the server.
     /// The connection should be closed and an error should be logged.
+    // TODO: does this ever happen?
     ServerError(eyre::Report),
 }
 
@@ -64,7 +67,13 @@ enum ServerState {
     },
     ServiceRequest,
     // At this point we transfer to <https://datatracker.ietf.org/doc/html/rfc4252>
-    UserAuthRequest,
+    UserAuthRequest {
+        /// Whether the client has failed already (by sending the wrong method).
+        // The second failure results in disconnecting.
+        has_failed: bool,
+    },
+    /// The connection has been opened, all connection-related messages are delegated to the connection handler.
+    ConnectionOpen(ServerChannelsState),
 }
 
 pub trait SshRng {
@@ -130,6 +139,7 @@ impl ServerConnection {
         self.packet_transport.recv_bytes(bytes)?;
 
         while let Some(packet) = self.packet_transport.recv_next_packet() {
+            trace!(packet_type = ?packet.payload.get(0), packet_len = ?packet.payload.len(), "Received packet");
             match &mut self.state {
                 ServerState::ProtoExchange { .. } => unreachable!("handled above"),
                 ServerState::KeyExchangeInit {
@@ -328,10 +338,115 @@ impl ServerConnection {
                             writer.finish()
                         },
                     });
-                    self.state = ServerState::UserAuthRequest;
+                    self.state = ServerState::UserAuthRequest { has_failed: false };
                 }
-                ServerState::UserAuthRequest => {
-                    todo!()
+                ServerState::UserAuthRequest { has_failed } => {
+                    // This is a super simplistic implementation of RFC4252 SSH authentication.
+                    // We ask for a public key, and always let that one pass.
+                    // The reason for this is that this makes it a lot easier to test locally.
+                    // It's not very good, but it's good enough for now.
+                    let mut auth_req = packet.payload_parser();
+
+                    if auth_req.u8()? != Packet::SSH_MSG_USERAUTH_REQUEST {
+                        return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
+                    }
+                    let username = auth_req.utf8_string()?;
+                    let service_name = auth_req.utf8_string()?;
+                    let method_name = auth_req.utf8_string()?;
+
+                    info!(
+                        ?username,
+                        ?service_name,
+                        ?method_name,
+                        "User trying to authenticate"
+                    );
+
+                    if service_name != "ssh-connection" {
+                        return Err(client_error!(
+                            "client tried to unsupported service: {service_name}"
+                        ));
+                    }
+
+                    match method_name {
+                        "password" => {
+                            let change_password = auth_req.bool()?;
+                            if change_password {
+                                return Err(client_error!(
+                                    "client tried to change password unprompted"
+                                ));
+                            }
+                            let password = auth_req.utf8_string()?;
+
+                            info!(?password, "Got password");
+                            // Don't worry queen, your password is correct!
+                            let mut success = Writer::new();
+                            success.u8(Packet::SSH_MSG_USERAUTH_SUCCESS);
+                            self.packet_transport.queue_packet(Packet {
+                                payload: success.finish(),
+                            });
+                            self.state = ServerState::ConnectionOpen(ServerChannelsState::new());
+                        }
+                        "publickey" => {
+                            info!("Got public key");
+                            // Don't worry queen, your key is correct!
+                            let mut success = Writer::new();
+                            success.u8(Packet::SSH_MSG_USERAUTH_SUCCESS);
+                            self.packet_transport.queue_packet(Packet {
+                                payload: success.finish(),
+                            });
+                            self.state = ServerState::ConnectionOpen(ServerChannelsState::new());
+                        }
+                        _ if *has_failed => {
+                            return Err(client_error!(
+                                "client tried unsupported method twice: {method_name}"
+                            ));
+                        }
+                        _ => {
+                            // Initial.
+
+                            let mut banner = Writer::new();
+                            banner.u8(Packet::SSH_MSG_USERAUTH_BANNER);
+                            banner.string(b"this system ONLY allows catgirls to enter.\r\nall other attempts WILL be prosecuted to the full extent of the rawr!!\r\n");
+                            banner.string(b"en-US");
+                            self.packet_transport.queue_packet(Packet {
+                                payload: banner.finish(),
+                            });
+
+                            let mut rejection = Writer::new();
+                            rejection.u8(Packet::SSH_MSG_USERAUTH_FAILURE);
+                            rejection.name_list(NameList::one("publickey"));
+                            rejection.bool(false);
+                            self.packet_transport.queue_packet(Packet {
+                                payload: rejection.finish(),
+                            });
+                            // Stay in the same state
+                        }
+                    }
+                }
+                ServerState::ConnectionOpen(con) => {
+                    let mut payload = packet.payload_parser();
+                    let packet_type = payload.u8()?;
+
+                    match packet_type {
+                        // Connection-related packets
+                        90..128 => {
+                            con.on_packet(packet_type, payload)?;
+                        }
+                        Packet::SSH_MSG_GLOBAL_REQUEST => {
+                            let request_name = payload.utf8_string()?;
+                            let want_reply = payload.bool()?;
+                            debug!(?request_name, ?want_reply, "Received global request");
+
+                            let mut failure = Writer::new();
+                            failure.u8(Packet::SSH_MSG_REQUEST_FAILURE);
+                            //self.packet_transport.queue_packet(Packet {
+                            //    payload: failure.finish(),
+                            //});
+                        }
+                        _ => {
+                            todo!("packet: {packet_type}");
+                        }
+                    }
                 }
             }
         }

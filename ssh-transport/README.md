@@ -6,6 +6,10 @@ Based on [RFC 4253 The Secure Shell (SSH) Transport Layer Protocol](https://data
 and [RFC 4251 The Secure Shell (SSH) Protocol Architecture](https://datatracker.ietf.org/doc/html/rfc4251)
 and [RFC 4250 The Secure Shell (SSH) Protocol Assigned Numbers](https://datatracker.ietf.org/doc/html/rfc4250).
 
+Also authentication and connection for now.
+- [The Secure Shell (SSH) Authentication Protocol](https://datatracker.ietf.org/doc/html/rfc4252)
+- [The Secure Shell (SSH) Connection Protocol](https://datatracker.ietf.org/doc/html/rfc4254)
+
 Other relevant RFCs:
 - [RFC 5649 AES Galois Counter Mode for the Secure Shell Transport Layer Protocol](https://datatracker.ietf.org/doc/html/rfc5647)
 - [RFC 5656 Elliptic Curve Algorithm Integration in the Secure Shell Transport Layer](https://datatracker.ietf.org/doc/html/rfc5656)

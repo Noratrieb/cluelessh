@@ -1,4 +1,4 @@
-use chacha20::cipher::{KeyInit, KeyIvInit, StreamCipher, StreamCipherSeek};
+use chacha20::cipher::{KeyInit, StreamCipher, StreamCipherSeek};
 use sha2::Digest;
 use subtle::ConstantTimeEq;
 
@@ -154,7 +154,10 @@ impl SshChaCha20Poly1305 {
 
     fn decrypt_len(&self, bytes: &mut [u8], packet_number: u64) {
         // <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
-        let mut cipher = SshChaCha20::new(&self.header_key, &packet_number.to_be_bytes().into());
+        let mut cipher = <SshChaCha20 as chacha20::cipher::KeyIvInit>::new(
+            &self.header_key,
+            &packet_number.to_be_bytes().into(),
+        );
         cipher.apply_keystream(bytes);
     }
 
@@ -208,9 +211,10 @@ impl SshChaCha20Poly1305 {
         main_cipher.apply_keystream(&mut poly1305_key);
 
         // As the first act of encryption, encrypt the length.
-        // THIS PART IS CORRECT!!!
-        let mut len_cipher =
-            SshChaCha20::new(&self.header_key, &packet_number.to_be_bytes().into());
+        let mut len_cipher = <SshChaCha20 as chacha20::cipher::KeyIvInit>::new(
+            &self.header_key,
+            &packet_number.to_be_bytes().into(),
+        );
         len_cipher.apply_keystream(&mut bytes[..4]);
 
         // Advance ChaCha's block counter to 1

@@ -106,6 +106,10 @@ impl Writer {
         self.write(data);
     }
 
+    pub(crate) fn bool(&mut self, v: bool) {
+        self.u8(v as u8);
+    }
+
     pub(crate) fn finish(self) -> Vec<u8> {
         self.0
     }
@@ -117,7 +121,7 @@ pub struct NameList<'a>(&'a str);
 impl<'a> NameList<'a> {
     pub(crate) fn one(item: &'a str) -> Self {
         if item.contains(',') {
-            panic!("tried creating name list with comma in item: {item}");
+            //panic!("tried creating name list with comma in item: {item}");
         }
         Self(item)
     }
