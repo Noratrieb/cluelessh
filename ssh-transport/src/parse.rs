@@ -22,6 +22,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        assert!(N < 100_000);
         if self.0.len() < N {
             return Err(crate::client_error!("packet too short"));
         }
@@ -33,6 +34,9 @@ impl<'a> Parser<'a> {
     pub fn slice(&mut self, len: usize) -> Result<&'a [u8]> {
         if self.0.len() < len {
             return Err(crate::client_error!("packet too short"));
+        }
+        if len > 100_000 {
+            return Err(crate::client_error!("bytes too long: {len}"));
         }
         let result = &self.0[..len];
         self.0 = &self.0[len..];
