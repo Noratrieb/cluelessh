@@ -120,7 +120,7 @@ impl Writer {
 }
 
 #[derive(Clone, Copy)]
-pub struct NameList<'a>(&'a str);
+pub struct NameList<'a>(pub &'a str);
 
 impl<'a> NameList<'a> {
     pub fn one(item: &'a str) -> Self {
@@ -132,7 +132,7 @@ impl<'a> NameList<'a> {
     pub fn none() -> NameList<'static> {
         NameList("")
     }
-    pub fn iter(&self) -> std::str::Split<char> {
+    pub fn iter(&self) -> std::str::Split<'a, char> {
         self.0.split(',')
     }
 }

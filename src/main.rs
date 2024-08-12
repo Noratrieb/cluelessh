@@ -220,6 +220,10 @@ fn execute_command(command: &[u8]) -> ProcessOutput {
             status: 0,
             stdout: CPUINFO_UNAME_A.to_vec(),
         },
+        "true" => ProcessOutput {
+            status: 0,
+            stdout: b"".to_vec(),
+        },
         _ => {
             let argv0 = command.split_ascii_whitespace().next().unwrap_or("");
 

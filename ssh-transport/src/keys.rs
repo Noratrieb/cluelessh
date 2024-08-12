@@ -3,9 +3,37 @@ use sha2::Digest;
 use subtle::ConstantTimeEq;
 
 use crate::{
+    client_error,
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
     Msg, Result,
 };
+
+#[derive(Clone, Copy)]
+pub struct KexAlgorithm {
+    pub name: &'static str,
+}
+
+pub const KEX_CURVE_25519_SHA256: KexAlgorithm = KexAlgorithm {
+    name: "curve25519-sha256",
+};
+
+pub struct AlgorithmNegotiation<T> {
+    pub supported: Vec<(&'static str, T)>,
+}
+
+impl<T: Copy> AlgorithmNegotiation<T> {
+    pub fn find<'a>(&self, client_supports: &str) -> Result<T> {
+        for client_alg in client_supports.split(',') {
+            if let Some(alg) = self.supported.iter().find(|alg| alg.0 == client_alg) {
+                return Ok(alg.1);
+            }
+        }
+
+        Err(client_error!(
+            "client does not support any matching algorithm: supported: {client_supports:?}"
+        ))
+    }
+}
 
 pub(crate) struct Session {
     session_id: [u8; 32],

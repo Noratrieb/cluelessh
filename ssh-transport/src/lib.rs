@@ -6,6 +6,7 @@ use core::str;
 use std::{collections::VecDeque, mem::take};
 
 use ed25519_dalek::ed25519::signature::Signer;
+use keys::AlgorithmNegotiation;
 use packet::{
     DhKeyExchangeInitPacket, DhKeyExchangeInitReplyPacket, KeyExchangeInitPacket, Packet,
     PacketTransport, SshPublicKey, SshSignature,
@@ -169,14 +170,24 @@ impl ServerConnection {
                             Ok(expected)
                         } else {
                             Err(client_error!(
-                                "client does not supported algorithm {expected}. supported: {list:?}",
+                                "client does not supporte algorithm {expected}. supported: {list:?}",
                             ))
                         }
                     };
 
-                    let key_algorithm = require_algorithm("curve25519-sha256", kex.kex_algorithms)?;
+                    // TODO: support ecdh-sha2-nistp256
+                    let kex_algorithms = AlgorithmNegotiation {
+                        supported: vec![(
+                            keys::KEX_CURVE_25519_SHA256.name,
+                            keys::KEX_CURVE_25519_SHA256,
+                        )],
+                    };
+                    let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;
+
                     let server_host_key_algorithm =
                         require_algorithm("ssh-ed25519", kex.server_host_key_algorithms)?;
+
+                    // TODO: support aes128-ctr (aes-gcm is not supported by everyone)
                     let encryption_algorithm_client_to_server = require_algorithm(
                         "chacha20-poly1305@openssh.com",
                         kex.encryption_algorithms_client_to_server,
@@ -205,7 +216,7 @@ impl ServerConnection {
 
                     let server_kexinit = KeyExchangeInitPacket {
                         cookie: [0; 16],
-                        kex_algorithms: NameList::one(key_algorithm),
+                        kex_algorithms: NameList::one(kex_algorithm.name),
                         server_host_key_algorithms: NameList::one(server_host_key_algorithm),
                         encryption_algorithms_client_to_server: NameList::one(
                             encryption_algorithm_client_to_server,
