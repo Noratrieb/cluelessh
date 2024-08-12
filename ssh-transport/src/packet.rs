@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use crate::client_error;
 use crate::keys::{Keys, Plaintext, Session};
-use crate::parse::{MpInt, NameList, Parser, Writer};
+use crate::parse::{NameList, Parser, Writer};
 use crate::Result;
 
 /// Frames the byte stream into packets.
@@ -101,7 +101,7 @@ impl PacketTransport {
         self.send_packets.pop_front()
     }
 
-    pub(crate) fn set_key(&mut self, h: [u8; 32], k: [u8; 32]) {
+    pub(crate) fn set_key(&mut self, h: [u8; 32], k: &[u8]) {
         if let Err(()) = self.keys.rekey(h, k) {
             self.keys = Box::new(Session::new(h, k));
         }
@@ -147,7 +147,9 @@ impl Packet {
 
     // 30 to 49 Key exchange method specific (numbers can be reused for different authentication methods)
     pub const SSH_MSG_KEXDH_INIT: u8 = 30;
+    pub const SSH_MSG_KEX_ECDH_INIT: u8 = 30; // Same number
     pub const SSH_MSG_KEXDH_REPLY: u8 = 31;
+    pub const SSH_MSG_KEX_ECDH_REPLY: u8 = 31;
 
     // -----
     // User authentication protocol:
@@ -329,21 +331,21 @@ impl<'a> KeyExchangeInitPacket<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct DhKeyExchangeInitPacket<'a> {
-    pub(crate) e: MpInt<'a>,
+pub(crate) struct KeyExchangeEcDhInitPacket<'a> {
+    pub(crate) qc: &'a [u8],
 }
-impl<'a> DhKeyExchangeInitPacket<'a> {
-    pub(crate) fn parse(payload: &'a [u8]) -> Result<DhKeyExchangeInitPacket<'_>> {
+impl<'a> KeyExchangeEcDhInitPacket<'a> {
+    pub(crate) fn parse(payload: &'a [u8]) -> Result<KeyExchangeEcDhInitPacket<'_>> {
         let mut c = Parser::new(payload);
 
         let kind = c.u8()?;
-        if kind != Packet::SSH_MSG_KEXDH_INIT {
+        if kind != Packet::SSH_MSG_KEX_ECDH_INIT {
             return Err(client_error!(
                 "expected SSH_MSG_KEXDH_INIT packet, found {kind}"
             ));
         }
-        let e = c.mpint()?;
-        Ok(Self { e })
+        let qc = c.string()?;
+        Ok(Self { qc })
     }
 }
 
@@ -371,17 +373,19 @@ pub(crate) struct SshSignature<'a> {
 
 #[derive(Debug)]
 pub(crate) struct DhKeyExchangeInitReplyPacket<'a> {
-    pub(crate) pubkey: SshPublicKey<'a>,
-    pub(crate) f: MpInt<'a>,
+    /// K_S
+    pub(crate) public_host_key: SshPublicKey<'a>,
+    /// Q_S
+    pub(crate) ephemeral_public_key: &'a [u8],
     pub(crate) signature: SshSignature<'a>,
 }
 impl<'a> DhKeyExchangeInitReplyPacket<'a> {
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut data = Writer::new();
 
-        data.u8(Packet::SSH_MSG_KEXDH_REPLY);
-        data.write(&self.pubkey.to_bytes());
-        data.mpint(self.f);
+        data.u8(Packet::SSH_MSG_KEX_ECDH_REPLY);
+        data.write(&self.public_host_key.to_bytes());
+        data.string(self.ephemeral_public_key);
 
         data.u32((4 + self.signature.format.len() + 4 + self.signature.data.len()) as u32);
         // <https://datatracker.ietf.org/doc/html/rfc8709#section-6>
@@ -480,7 +484,9 @@ impl PacketParser {
         // 'padding_length', 'payload', 'random padding', and 'mac').
         // Implementations SHOULD support longer packets, where they might be needed.
         if packet_length > 500_000 {
-            return Err(client_error!("packet too large (>500_000): {packet_length}"));
+            return Err(client_error!(
+                "packet too large (>500_000): {packet_length}"
+            ));
         }
 
         let remaining_len = std::cmp::min(bytes.len(), packet_length - (self.raw_data.len() - 4));

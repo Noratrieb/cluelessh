@@ -58,8 +58,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn mpint(&mut self) -> Result<MpInt<'a>> {
-        let data = self.string()?;
-        Ok(MpInt(data))
+        todo!("do correctly")
     }
 
     pub fn string(&mut self) -> Result<&'a [u8]> {
@@ -101,8 +100,8 @@ impl Writer {
         self.string(list.0.as_bytes());
     }
 
-    pub fn mpint(&mut self, mpint: MpInt<'_>) {
-        self.string(mpint.0);
+    pub fn mpint(&mut self, _mpint: MpInt<'_>) {
+        todo!("implement correctly?")
     }
 
     pub fn string(&mut self, data: &[u8]) {
@@ -143,19 +142,5 @@ impl Debug for NameList<'_> {
     }
 }
 
-// TODO: THIS IS A BRITTLE MESS BECAUSE THE RFC SUCKS HERE
-// DO NOT TOUCH MPINT ENCODING ANYWHERE
 #[derive(Debug, Clone, Copy)]
-pub struct MpInt<'a>(pub(crate) &'a [u8]);
-
-impl<'a> MpInt<'a> {
-    pub(crate) fn as_x25519_public_key(&self) -> Result<x25519_dalek::PublicKey> {
-        let Ok(arr) = <[u8; 32]>::try_from(self.0) else {
-            return Err(crate::client_error!(
-                "invalid x25519 public key length, should be 32, was: {}",
-                self.0.len()
-            ));
-        };
-        Ok(x25519_dalek::PublicKey::from(arr))
-    }
-}
+pub struct MpInt<'a>(pub &'a [u8]);

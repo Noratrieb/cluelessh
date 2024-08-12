@@ -8,14 +8,13 @@ use std::{collections::VecDeque, mem::take};
 use ed25519_dalek::ed25519::signature::Signer;
 use keys::AlgorithmNegotiation;
 use packet::{
-    DhKeyExchangeInitPacket, DhKeyExchangeInitReplyPacket, KeyExchangeInitPacket, Packet,
+    DhKeyExchangeInitReplyPacket, KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet,
     PacketTransport, SshPublicKey, SshSignature,
 };
-use parse::{MpInt, NameList, Parser, Writer};
+use parse::{NameList, Parser, Writer};
 use rand::RngCore;
 use sha2::Digest;
 use tracing::{debug, info, trace};
-use x25519_dalek::{EphemeralSecret, PublicKey};
 
 pub use packet::Msg;
 
@@ -64,10 +63,11 @@ enum ServerState {
         client_identification: Vec<u8>,
         client_kexinit: Vec<u8>,
         server_kexinit: Vec<u8>,
+        kex_algorithm: keys::KexAlgorithm,
     },
     NewKeys {
         h: [u8; 32],
-        k: [u8; 32],
+        k: Vec<u8>,
     },
     ServiceRequest,
     Open,
@@ -250,24 +250,24 @@ impl ServerConnection {
                         client_identification,
                         client_kexinit: packet.payload,
                         server_kexinit: server_kexinit_payload,
+                        kex_algorithm,
                     };
                 }
                 ServerState::DhKeyInit {
                     client_identification,
                     client_kexinit,
                     server_kexinit,
+                    kex_algorithm,
                 } => {
                     // TODO: move to keys.rs
-                    let dh = DhKeyExchangeInitPacket::parse(&packet.payload)?;
+                    let dh = KeyExchangeEcDhInitPacket::parse(&packet.payload)?;
 
-                    let secret =
-                        EphemeralSecret::random_from_rng(SshRngRandAdapter(&mut *self.rng));
-                    let server_public_key = PublicKey::from(&secret); // Q_S
+                    let client_public_key = dh.qc;
 
-                    let client_public_key = dh.e; // Q_C
-
-                    let shared_secret =
-                        secret.diffie_hellman(&client_public_key.as_x25519_public_key()?); // K
+                    let keys::KexAlgorithmOutput {
+                        server_public_key,
+                        shared_secret,
+                    } = (kex_algorithm.exchange)(client_public_key, &mut *self.rng)?;
 
                     let pub_hostkey = SshPublicKey {
                         format: b"ssh-ed25519",
@@ -297,12 +297,13 @@ impl ServerConnection {
                     hash_string(&mut hash, client_kexinit); // I_C
                     hash_string(&mut hash, server_kexinit); // I_S
                     add_hash(&mut hash, &pub_hostkey.to_bytes()); // K_S
-                                                                  // For normal DH as in RFC4253, e and f are mpints.
-                                                                  // But for ECDH as defined in RFC5656, Q_C and Q_S are strings.
-                                                                  // <https://datatracker.ietf.org/doc/html/rfc5656#section-4>
-                    hash_string(&mut hash, client_public_key.0); // Q_C
-                    hash_string(&mut hash, server_public_key.as_bytes()); // Q_S
-                    hash_mpint(&mut hash, shared_secret.as_bytes()); // K
+
+                    // For normal DH as in RFC4253, e and f are mpints.
+                    // But for ECDH as defined in RFC5656, Q_C and Q_S are strings.
+                    // <https://datatracker.ietf.org/doc/html/rfc5656#section-4>
+                    hash_string(&mut hash, client_public_key); // Q_C
+                    hash_string(&mut hash, &server_public_key); // Q_S
+                    hash_mpint(&mut hash, &shared_secret); // K
 
                     let hash = hash.finalize();
 
@@ -317,8 +318,8 @@ impl ServerConnection {
                     // eprintln!("hash:              {:x?}", hash);
 
                     let packet = DhKeyExchangeInitReplyPacket {
-                        pubkey: pub_hostkey,
-                        f: MpInt(server_public_key.as_bytes()),
+                        public_host_key: pub_hostkey,
+                        ephemeral_public_key: &server_public_key,
                         signature: SshSignature {
                             format: b"ssh-ed25519",
                             data: &signature.to_bytes(),
@@ -329,7 +330,7 @@ impl ServerConnection {
                     });
                     self.state = ServerState::NewKeys {
                         h: hash.into(),
-                        k: shared_secret.to_bytes(),
+                        k: shared_secret,
                     };
                 }
                 ServerState::NewKeys { h, k } => {
@@ -337,13 +338,11 @@ impl ServerConnection {
                         return Err(client_error!("did not send SSH_MSG_NEWKEYS"));
                     }
 
-                    let (h, k) = (*h, *k);
-
                     self.packet_transport.queue_packet(Packet {
                         payload: vec![Packet::SSH_MSG_NEWKEYS],
                     });
+                    self.packet_transport.set_key(*h, k);
                     self.state = ServerState::ServiceRequest {};
-                    self.packet_transport.set_key(h, k);
                 }
                 ServerState::ServiceRequest => {
                     // TODO: this should probably move out of here? unsure.

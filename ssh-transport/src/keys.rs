@@ -5,16 +5,45 @@ use subtle::ConstantTimeEq;
 use crate::{
     client_error,
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
-    Msg, Result,
+    Msg, Result, SshRng,
 };
 
 #[derive(Clone, Copy)]
 pub struct KexAlgorithm {
     pub name: &'static str,
+    pub exchange: fn(
+        client_public_key: &[u8],
+        random: &mut (dyn SshRng + Send + Sync),
+    ) -> Result<KexAlgorithmOutput>,
+}
+pub struct KexAlgorithmOutput {
+    /// K
+    pub shared_secret: Vec<u8>,
+    /// Q_S
+    pub server_public_key: Vec<u8>,
 }
 
+/// <https://datatracker.ietf.org/doc/html/rfc8731>
 pub const KEX_CURVE_25519_SHA256: KexAlgorithm = KexAlgorithm {
     name: "curve25519-sha256",
+    exchange: |client_public_key, rng| {
+        let secret = x25519_dalek::EphemeralSecret::random_from_rng(crate::SshRngRandAdapter(rng));
+        let server_public_key = x25519_dalek::PublicKey::from(&secret); // Q_S
+
+        let Ok(arr) = <[u8; 32]>::try_from(client_public_key) else {
+            return Err(crate::client_error!(
+                "invalid x25519 public key length, should be 32, was: {}",
+                client_public_key.len()
+            ));
+        };
+        let client_public_key = x25519_dalek::PublicKey::from(arr);
+        let shared_secret = secret.diffie_hellman(&client_public_key); // K
+
+        Ok(KexAlgorithmOutput {
+            server_public_key: server_public_key.as_bytes().to_vec(),
+            shared_secret: shared_secret.as_bytes().to_vec(),
+        })
+    },
 };
 
 pub struct AlgorithmNegotiation<T> {
@@ -48,7 +77,7 @@ pub(crate) trait Keys: Send + Sync + 'static {
     fn encrypt_packet_to_msg(&mut self, packet: Packet, packet_number: u64) -> Msg;
 
     fn additional_mac_len(&self) -> usize;
-    fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) -> Result<(), ()>;
+    fn rekey(&mut self, h: [u8; 32], k: &[u8]) -> Result<(), ()>;
 }
 
 pub(crate) struct Plaintext;
@@ -63,18 +92,18 @@ impl Keys for Plaintext {
     fn additional_mac_len(&self) -> usize {
         0
     }
-    fn rekey(&mut self, _: [u8; 32], _: [u8; 32]) -> Result<(), ()> {
+    fn rekey(&mut self, _: [u8; 32], _: &[u8]) -> Result<(), ()> {
         Err(())
     }
 }
 
 impl Session {
-    pub(crate) fn new(h: [u8; 32], k: [u8; 32]) -> Self {
+    pub(crate) fn new(h: [u8; 32], k: &[u8]) -> Self {
         Self::from_keys(h, h, k)
     }
 
     /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
-    fn from_keys(session_id: [u8; 32], h: [u8; 32], k: [u8; 32]) -> Self {
+    fn from_keys(session_id: [u8; 32], h: [u8; 32], k: &[u8]) -> Self {
         let encryption_key_client_to_server =
             SshChaCha20Poly1305::new(derive_key(k, h, "C", session_id));
         let encryption_key_server_to_client =
@@ -114,7 +143,7 @@ impl Keys for Session {
         poly1305::BLOCK_SIZE
     }
 
-    fn rekey(&mut self, h: [u8; 32], k: [u8; 32]) -> Result<(), ()> {
+    fn rekey(&mut self, h: [u8; 32], k: &[u8]) -> Result<(), ()> {
         *self = Self::from_keys(self.session_id, h, k);
         Ok(())
     }
@@ -122,7 +151,7 @@ impl Keys for Session {
 
 /// Derive a key from the shared secret K and exchange hash H.
 /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
-fn derive_key(k: [u8; 32], h: [u8; 32], letter: &str, session_id: [u8; 32]) -> [u8; 64] {
+fn derive_key(k: &[u8], h: [u8; 32], letter: &str, session_id: [u8; 32]) -> [u8; 64] {
     let sha2len = sha2::Sha256::output_size();
     let mut output = [0; 64];
 
@@ -254,7 +283,7 @@ impl SshChaCha20Poly1305 {
         // Now, MAC the length || content, and push that to the end.
         let mac = poly1305::Poly1305::new(&poly1305_key.into()).compute_unpadded(&bytes);
 
-        bytes.extend_from_slice(&mac);
+        bytes.extend_from_slice(mac.as_slice());
 
         EncryptedPacket::from_encrypted_full_bytes(bytes)
     }
