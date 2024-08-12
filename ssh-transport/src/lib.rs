@@ -6,7 +6,7 @@ use core::str;
 use std::{collections::VecDeque, mem::take};
 
 use ed25519_dalek::ed25519::signature::Signer;
-use keys::AlgorithmNegotiation;
+use keys::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm};
 use packet::{
     DhKeyExchangeInitReplyPacket, KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet,
     PacketTransport, SshPublicKey, SshSignature,
@@ -64,10 +64,14 @@ enum ServerState {
         client_kexinit: Vec<u8>,
         server_kexinit: Vec<u8>,
         kex_algorithm: keys::KexAlgorithm,
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
     },
     NewKeys {
         h: [u8; 32],
         k: Vec<u8>,
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
     },
     ServiceRequest,
     Open,
@@ -163,41 +167,37 @@ impl ServerConnection {
                 } => {
                     let kex = KeyExchangeInitPacket::parse(&packet.payload)?;
 
-                    let require_algorithm = |expected: &'static str,
-                                             list: NameList<'_>|
-                     -> Result<&'static str> {
-                        if list.iter().any(|alg| alg == expected) {
-                            Ok(expected)
-                        } else {
-                            Err(client_error!(
+                    let require_algorithm =
+                        |expected: &'static str, list: NameList<'_>| -> Result<&'static str> {
+                            if list.iter().any(|alg| alg == expected) {
+                                Ok(expected)
+                            } else {
+                                Err(client_error!(
                                 "client does not support algorithm {expected}. supported: {list:?}",
                             ))
-                        }
-                    };
+                            }
+                        };
 
                     let kex_algorithms = AlgorithmNegotiation {
-                        supported: vec![(
-                            keys::KEX_CURVE_25519_SHA256.name,
-                            keys::KEX_CURVE_25519_SHA256,
-                        ), (
-                            keys::KEX_ECDH_SHA2_NISTP256.name,
-                            keys::KEX_ECDH_SHA2_NISTP256,
-                        )],
+                        supported: vec![keys::KEX_CURVE_25519_SHA256, keys::KEX_ECDH_SHA2_NISTP256],
                     };
                     let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;
 
                     let server_host_key_algorithm =
                         require_algorithm("ssh-ed25519", kex.server_host_key_algorithms)?;
 
+                    let encryption_algorithms_client_to_server = AlgorithmNegotiation {
+                        supported: vec![keys::ENC_CHACHA20POLY1305],
+                    };
+                    let encryption_algorithms_server_to_client = AlgorithmNegotiation {
+                        supported: vec![keys::ENC_CHACHA20POLY1305],
+                    };
+
                     // TODO: support aes256-gcm@openssh.com
-                    let encryption_algorithm_client_to_server = require_algorithm(
-                        "chacha20-poly1305@openssh.com",
-                        kex.encryption_algorithms_client_to_server,
-                    )?;
-                    let encryption_algorithm_server_to_client = require_algorithm(
-                        "chacha20-poly1305@openssh.com",
-                        kex.encryption_algorithms_server_to_client,
-                    )?;
+                    let encryption_client_to_server = encryption_algorithms_client_to_server
+                        .find(kex.encryption_algorithms_client_to_server.0)?;
+                    let encryption_server_to_client = encryption_algorithms_server_to_client
+                        .find(kex.encryption_algorithms_server_to_client.0)?;
                     let mac_algorithm_client_to_server =
                         require_algorithm("hmac-sha2-256", kex.mac_algorithms_client_to_server)?;
                     let mac_algorithm_server_to_client =
@@ -218,13 +218,13 @@ impl ServerConnection {
 
                     let server_kexinit = KeyExchangeInitPacket {
                         cookie: [0; 16],
-                        kex_algorithms: NameList::one(kex_algorithm.name),
+                        kex_algorithms: NameList::one(kex_algorithm.name()),
                         server_host_key_algorithms: NameList::one(server_host_key_algorithm),
                         encryption_algorithms_client_to_server: NameList::one(
-                            encryption_algorithm_client_to_server,
+                            encryption_client_to_server.name(),
                         ),
                         encryption_algorithms_server_to_client: NameList::one(
-                            encryption_algorithm_server_to_client,
+                            encryption_server_to_client.name(),
                         ),
                         mac_algorithms_client_to_server: NameList::one(
                             mac_algorithm_client_to_server,
@@ -253,6 +253,8 @@ impl ServerConnection {
                         client_kexinit: packet.payload,
                         server_kexinit: server_kexinit_payload,
                         kex_algorithm,
+                        encryption_client_to_server,
+                        encryption_server_to_client,
                     };
                 }
                 ServerState::DhKeyInit {
@@ -260,6 +262,8 @@ impl ServerConnection {
                     client_kexinit,
                     server_kexinit,
                     kex_algorithm,
+                    encryption_client_to_server,
+                    encryption_server_to_client,
                 } => {
                     // TODO: move to keys.rs
                     let dh = KeyExchangeEcDhInitPacket::parse(&packet.payload)?;
@@ -333,9 +337,16 @@ impl ServerConnection {
                     self.state = ServerState::NewKeys {
                         h: hash.into(),
                         k: shared_secret,
+                        encryption_client_to_server: *encryption_client_to_server,
+                        encryption_server_to_client: *encryption_server_to_client,
                     };
                 }
-                ServerState::NewKeys { h, k } => {
+                ServerState::NewKeys {
+                    h,
+                    k,
+                    encryption_client_to_server,
+                    encryption_server_to_client,
+                } => {
                     if packet.payload != [Packet::SSH_MSG_NEWKEYS] {
                         return Err(client_error!("did not send SSH_MSG_NEWKEYS"));
                     }
@@ -343,7 +354,12 @@ impl ServerConnection {
                     self.packet_transport.queue_packet(Packet {
                         payload: vec![Packet::SSH_MSG_NEWKEYS],
                     });
-                    self.packet_transport.set_key(*h, k);
+                    self.packet_transport.set_key(
+                        *h,
+                        k,
+                        *encryption_client_to_server,
+                        *encryption_server_to_client,
+                    );
                     self.state = ServerState::ServiceRequest {};
                 }
                 ServerState::ServiceRequest => {

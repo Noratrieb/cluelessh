@@ -8,13 +8,22 @@ use crate::{
     Msg, Result, SshRng,
 };
 
+pub trait AlgorithmName {
+    fn name(&self) -> &'static str;
+}
+
 #[derive(Clone, Copy)]
 pub struct KexAlgorithm {
-    pub name: &'static str,
+    name: &'static str,
     pub exchange: fn(
         client_public_key: &[u8],
         random: &mut (dyn SshRng + Send + Sync),
     ) -> Result<KexAlgorithmOutput>,
+}
+impl AlgorithmName for KexAlgorithm {
+    fn name(&self) -> &'static str {
+        self.name
+    }
 }
 pub struct KexAlgorithmOutput {
     /// K
@@ -69,15 +78,47 @@ pub const KEX_ECDH_SHA2_NISTP256: KexAlgorithm = KexAlgorithm {
     },
 };
 
+#[derive(Clone, Copy)]
+pub struct EncryptionAlgorithm {
+    name: &'static str,
+    decrypt_len: fn(keys: &[u8], bytes: &mut [u8], packet_number: u64),
+    decrypt_packet: fn(keys: &[u8], bytes: RawPacket, packet_number: u64) -> Result<Packet>,
+    encrypt_packet: fn(keys: &[u8], packet: Packet, packet_number: u64) -> EncryptedPacket,
+}
+impl AlgorithmName for EncryptionAlgorithm {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+pub const ENC_CHACHA20POLY1305: EncryptionAlgorithm = EncryptionAlgorithm {
+    name: "chacha20-poly1305@openssh.com",
+    decrypt_len: |keys, bytes, packet_number| {
+        let alg = SshChaCha20Poly1305::from_keys(keys);
+        alg.decrypt_len(bytes, packet_number)
+    },
+    decrypt_packet: |keys, bytes, packet_number| {
+        let alg = SshChaCha20Poly1305::from_keys(keys);
+        alg.decrypt_packet(bytes, packet_number)
+    },
+    encrypt_packet: |keys, packet, packet_number| {
+        let alg = SshChaCha20Poly1305::from_keys(keys);
+        alg.encrypt_packet(packet, packet_number)
+    },
+};
+
 pub struct AlgorithmNegotiation<T> {
-    pub supported: Vec<(&'static str, T)>,
+    pub supported: Vec<T>,
 }
 
-impl<T: Copy> AlgorithmNegotiation<T> {
-    pub fn find<'a>(&self, client_supports: &str) -> Result<T> {
+impl<T: AlgorithmName> AlgorithmNegotiation<T> {
+    pub fn find<'a>(mut self, client_supports: &str) -> Result<T> {
         for client_alg in client_supports.split(',') {
-            if let Some(alg) = self.supported.iter().find(|alg| alg.0 == client_alg) {
-                return Ok(alg.1);
+            if let Some(alg) = self
+                .supported
+                .iter()
+                .position(|alg| alg.name() == client_alg)
+            {
+                return Ok(self.supported.remove(alg));
             }
         }
 
@@ -89,8 +130,10 @@ impl<T: Copy> AlgorithmNegotiation<T> {
 
 pub(crate) struct Session {
     session_id: [u8; 32],
-    encryption_key_client_to_server: SshChaCha20Poly1305,
-    encryption_key_server_to_client: SshChaCha20Poly1305,
+    encryption_key_client_to_server: [u8; 64],
+    encryption_client_to_server: EncryptionAlgorithm,
+    encryption_key_server_to_client: [u8; 64],
+    encryption_server_to_client: EncryptionAlgorithm,
 }
 
 pub(crate) trait Keys: Send + Sync + 'static {
@@ -100,7 +143,13 @@ pub(crate) trait Keys: Send + Sync + 'static {
     fn encrypt_packet_to_msg(&mut self, packet: Packet, packet_number: u64) -> Msg;
 
     fn additional_mac_len(&self) -> usize;
-    fn rekey(&mut self, h: [u8; 32], k: &[u8]) -> Result<(), ()>;
+    fn rekey(
+        &mut self,
+        h: [u8; 32],
+        k: &[u8],
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
+    ) -> Result<(), ()>;
 }
 
 pub(crate) struct Plaintext;
@@ -115,29 +164,52 @@ impl Keys for Plaintext {
     fn additional_mac_len(&self) -> usize {
         0
     }
-    fn rekey(&mut self, _: [u8; 32], _: &[u8]) -> Result<(), ()> {
+    fn rekey(
+        &mut self,
+        _: [u8; 32],
+        _: &[u8],
+        _: EncryptionAlgorithm,
+        _: EncryptionAlgorithm,
+    ) -> Result<(), ()> {
         Err(())
     }
 }
 
 impl Session {
-    pub(crate) fn new(h: [u8; 32], k: &[u8]) -> Self {
-        Self::from_keys(h, h, k)
+    pub(crate) fn new(
+        h: [u8; 32],
+        k: &[u8],
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
+    ) -> Self {
+        Self::from_keys(
+            h,
+            h,
+            k,
+            encryption_client_to_server,
+            encryption_server_to_client,
+        )
     }
 
     /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
-    fn from_keys(session_id: [u8; 32], h: [u8; 32], k: &[u8]) -> Self {
-        let encryption_key_client_to_server =
-            SshChaCha20Poly1305::new(derive_key(k, h, "C", session_id));
-        let encryption_key_server_to_client =
-            SshChaCha20Poly1305::new(derive_key(k, h, "D", session_id));
+    fn from_keys(
+        session_id: [u8; 32],
+        h: [u8; 32],
+        k: &[u8],
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
+    ) -> Self {
+        let encryption_key_client_to_server = derive_key(k, h, "C", session_id);
+        let encryption_key_server_to_client = derive_key(k, h, "D", session_id);
 
         Self {
             session_id,
             // client_to_server_iv: derive("A").into(),
             // server_to_client_iv: derive("B").into(),
             encryption_key_client_to_server,
+            encryption_client_to_server,
             encryption_key_server_to_client,
+            encryption_server_to_client,
             // integrity_key_client_to_server: derive("E").into(),
             // integrity_key_server_to_client: derive("F").into(),
         }
@@ -146,19 +218,27 @@ impl Session {
 
 impl Keys for Session {
     fn decrypt_len(&mut self, bytes: &mut [u8; 4], packet_number: u64) {
-        self.encryption_key_client_to_server
-            .decrypt_len(bytes, packet_number);
+        (self.encryption_client_to_server.decrypt_len)(
+            &self.encryption_key_client_to_server,
+            bytes,
+            packet_number,
+        );
     }
 
     fn decrypt_packet(&mut self, bytes: RawPacket, packet_number: u64) -> Result<Packet> {
-        self.encryption_key_client_to_server
-            .decrypt_packet(bytes, packet_number)
+        (self.encryption_client_to_server.decrypt_packet)(
+            &self.encryption_key_client_to_server,
+            bytes,
+            packet_number,
+        )
     }
 
     fn encrypt_packet_to_msg(&mut self, packet: Packet, packet_number: u64) -> Msg {
-        let packet = self
-            .encryption_key_server_to_client
-            .encrypt_packet(packet, packet_number);
+        let packet = (self.encryption_server_to_client.encrypt_packet)(
+            &self.encryption_key_server_to_client,
+            packet,
+            packet_number,
+        );
         Msg(MsgKind::EncryptedPacket(packet))
     }
 
@@ -166,8 +246,20 @@ impl Keys for Session {
         poly1305::BLOCK_SIZE
     }
 
-    fn rekey(&mut self, h: [u8; 32], k: &[u8]) -> Result<(), ()> {
-        *self = Self::from_keys(self.session_id, h, k);
+    fn rekey(
+        &mut self,
+        h: [u8; 32],
+        k: &[u8],
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
+    ) -> Result<(), ()> {
+        *self = Self::from_keys(
+            self.session_id,
+            h,
+            k,
+            encryption_client_to_server,
+            encryption_server_to_client,
+        );
         Ok(())
     }
 }
@@ -225,10 +317,11 @@ struct SshChaCha20Poly1305 {
 }
 
 impl SshChaCha20Poly1305 {
-    fn new(key: [u8; 64]) -> Self {
+    fn from_keys(keys: &[u8]) -> Self {
+        assert_eq!(keys.len(), 64);
         Self {
-            main_key: <[u8; 32]>::try_from(&key[..32]).unwrap().into(),
-            header_key: <[u8; 32]>::try_from(&key[32..]).unwrap().into(),
+            main_key: <[u8; 32]>::try_from(&keys[..32]).unwrap().into(),
+            header_key: <[u8; 32]>::try_from(&keys[32..]).unwrap().into(),
         }
     }
 
@@ -241,7 +334,7 @@ impl SshChaCha20Poly1305 {
         cipher.apply_keystream(bytes);
     }
 
-    fn decrypt_packet(&mut self, mut bytes: RawPacket, packet_number: u64) -> Result<Packet> {
+    fn decrypt_packet(&self, mut bytes: RawPacket, packet_number: u64) -> Result<Packet> {
         // <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
 
         let mut cipher = <SshChaCha20 as chacha20::cipher::KeyIvInit>::new(
@@ -276,7 +369,7 @@ impl SshChaCha20Poly1305 {
         Packet::from_full(encrypted_packet_content)
     }
 
-    fn encrypt_packet(&mut self, packet: Packet, packet_number: u64) -> EncryptedPacket {
+    fn encrypt_packet(&self, packet: Packet, packet_number: u64) -> EncryptedPacket {
         let mut bytes = packet.to_bytes(false);
 
         // Prepare the main cipher.

@@ -3,7 +3,7 @@ mod ctors;
 use std::collections::VecDeque;
 
 use crate::client_error;
-use crate::keys::{Keys, Plaintext, Session};
+use crate::keys::{EncryptionAlgorithm, Keys, Plaintext, Session};
 use crate::parse::{NameList, Parser, Writer};
 use crate::Result;
 
@@ -101,9 +101,25 @@ impl PacketTransport {
         self.send_packets.pop_front()
     }
 
-    pub(crate) fn set_key(&mut self, h: [u8; 32], k: &[u8]) {
-        if let Err(()) = self.keys.rekey(h, k) {
-            self.keys = Box::new(Session::new(h, k));
+    pub(crate) fn set_key(
+        &mut self,
+        h: [u8; 32],
+        k: &[u8],
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
+    ) {
+        if let Err(()) = self.keys.rekey(
+            h,
+            k,
+            encryption_client_to_server,
+            encryption_server_to_client,
+        ) {
+            self.keys = Box::new(Session::new(
+                h,
+                k,
+                encryption_client_to_server,
+                encryption_server_to_client,
+            ));
         }
     }
 }
