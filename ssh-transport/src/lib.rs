@@ -131,6 +131,8 @@ impl ServerConnection {
                 // TODO: care that its SSH 2.0 instead of anythin anything else
                 // The client will not send any more information than this until we respond, so discord the rest of the bytes.
                 let client_identification = received.to_owned();
+                let client_ident_string = String::from_utf8_lossy(&client_identification);
+                debug!(identification = %client_ident_string, "Client identifier");
                 self.packet_transport.queue_send_protocol_info();
                 self.state = ServerState::KeyExchangeInit {
                     client_identification,
