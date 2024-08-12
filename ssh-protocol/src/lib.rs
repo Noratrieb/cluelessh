@@ -135,7 +135,6 @@ pub mod auth {
                     info!(%password, "Got password");
                     // Don't worry queen, your password is correct!
                     self.queue_packet(Packet::new_msg_userauth_success());
-
                     self.is_authenticated = true;
                 }
                 "publickey" => {

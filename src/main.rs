@@ -87,6 +87,7 @@ async fn handle_connection(
             .await
             .wrap_err("reading from connection")?;
         if read == 0 {
+            info!("Did not read any bytes from TCP stream, EOF");
             return Ok(());
         }
 
@@ -100,6 +101,7 @@ async fn handle_connection(
                     return Err(err);
                 }
                 SshStatus::Disconnect => {
+                    info!("Received disconnect from client");
                     return Ok(());
                 }
             }

@@ -157,8 +157,8 @@ impl ServerChannelsState {
 
                 self.packets_to_send
                     .push_back(Packet::new_msg_channel_open_confirmation(
-                        our_number.0,
                         sender_channel,
+                        our_number.0,
                         initial_window_size,
                         max_packet_size,
                     ));

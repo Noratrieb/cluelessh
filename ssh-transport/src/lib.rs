@@ -5,8 +5,8 @@ pub mod parse;
 use core::str;
 use std::{collections::VecDeque, mem::take};
 
-use ed25519_dalek::ed25519::signature::Signer;
 use crypto::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm};
+use ed25519_dalek::ed25519::signature::Signer;
 use packet::{
     DhKeyExchangeInitReplyPacket, KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet,
     PacketTransport, SshPublicKey, SshSignature,
@@ -153,7 +153,26 @@ impl ServerConnection {
                     let description = disconnect.utf8_string()?;
                     let _language_tag = disconnect.utf8_string()?;
 
-                    info!(%reason, %description, "Client disconnecting");
+                    let reason_string = match reason {
+                        1 => "SSH_DISCONNECT_HOST_NOT_ALLOWED_TO_CONNECT",
+                        2 => "SSH_DISCONNECT_PROTOCOL_ERROR",
+                        3 => "SSH_DISCONNECT_KEY_EXCHANGE_FAILED",
+                        4 => "SSH_DISCONNECT_RESERVED",
+                        5 => "SSH_DISCONNECT_MAC_ERROR",
+                        6 => "SSH_DISCONNECT_COMPRESSION_ERROR",
+                        7 => "SSH_DISCONNECT_SERVICE_NOT_AVAILABLE",
+                        8 => "SSH_DISCONNECT_PROTOCOL_VERSION_NOT_SUPPORTED",
+                        9 => "SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE",
+                        10 => "SSH_DISCONNECT_CONNECTION_LOST",
+                        11 => "SSH_DISCONNECT_BY_APPLICATION",
+                        12 => "SSH_DISCONNECT_TOO_MANY_CONNECTIONS",
+                        13 => "SSH_DISCONNECT_AUTH_CANCELLED_BY_USER",
+                        14 => "SSH_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE",
+                        15 => "SSH_DISCONNECT_ILLEGAL_USER_NAME",
+                        _ => "<unknown>",
+                    };
+
+                    info!(%reason, %reason_string, %description, "Client disconnecting");
 
                     return Ok(());
                 }
@@ -179,7 +198,10 @@ impl ServerConnection {
                         };
 
                     let kex_algorithms = AlgorithmNegotiation {
-                        supported: vec![crypto::KEX_CURVE_25519_SHA256, crypto::KEX_ECDH_SHA2_NISTP256],
+                        supported: vec![
+                            crypto::KEX_CURVE_25519_SHA256,
+                            crypto::KEX_ECDH_SHA2_NISTP256,
+                        ],
                     };
                     let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;
 
