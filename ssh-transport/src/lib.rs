@@ -170,7 +170,7 @@ impl ServerConnection {
                             Ok(expected)
                         } else {
                             Err(client_error!(
-                                "client does not supporte algorithm {expected}. supported: {list:?}",
+                                "client does not support algorithm {expected}. supported: {list:?}",
                             ))
                         }
                     };
@@ -189,7 +189,7 @@ impl ServerConnection {
                     let server_host_key_algorithm =
                         require_algorithm("ssh-ed25519", kex.server_host_key_algorithms)?;
 
-                    // TODO: support aes128-ctr (aes-gcm is not supported by everyone)
+                    // TODO: support aes256-gcm@openssh.com
                     let encryption_algorithm_client_to_server = require_algorithm(
                         "chacha20-poly1305@openssh.com",
                         kex.encryption_algorithms_client_to_server,
