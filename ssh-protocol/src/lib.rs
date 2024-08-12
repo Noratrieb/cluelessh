@@ -112,9 +112,9 @@ pub mod auth {
             let method_name = auth_req.utf8_string()?;
 
             info!(
-                ?username,
-                ?service_name,
-                ?method_name,
+                %username,
+                %service_name,
+                %method_name,
                 "User trying to authenticate"
             );
 
@@ -132,7 +132,7 @@ pub mod auth {
                     }
                     let password = auth_req.utf8_string()?;
 
-                    info!(?password, "Got password");
+                    info!(%password, "Got password");
                     // Don't worry queen, your password is correct!
                     self.queue_packet(Packet::new_msg_userauth_success());
 

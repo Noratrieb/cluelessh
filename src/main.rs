@@ -33,13 +33,13 @@ async fn main() -> eyre::Result<()> {
         .parse::<SocketAddr>()
         .wrap_err_with(|| format!("failed to parse listen addr '{addr}'"))?;
 
-    info!(?addr, "Starting server");
+    info!(%addr, "Starting server");
 
     let listener = TcpListener::bind(addr).await.wrap_err("binding listener")?;
 
     loop {
         let next = listener.accept().await?;
-        let span = info_span!("connection", addr = ?next.1);
+        let span = info_span!("connection", addr = %next.1);
         tokio::spawn(
             async {
                 let mut total_sent_data = Vec::new();
@@ -48,7 +48,7 @@ async fn main() -> eyre::Result<()> {
                     error!(?err, "error handling connection");
                 }
 
-                info!(stdin = ?String::from_utf8_lossy(&total_sent_data), "Finished connection");
+                info!(stdin = %String::from_utf8_lossy(&total_sent_data), "Finished connection");
             }
             .instrument(span),
         );
@@ -61,7 +61,7 @@ async fn handle_connection(
 ) -> Result<()> {
     let (mut conn, addr) = next;
 
-    info!(?addr, "Received a new connection");
+    info!(%addr, "Received a new connection");
 
     //let rng = vec![
     //    0x14, 0xa2, 0x04, 0xa5, 0x4b, 0x2f, 0x5f, 0xa7, 0xff, 0x53, 0x13, 0x67, 0x57, 0x67, 0xbc,
@@ -168,7 +168,7 @@ async fn handle_connection(
                     }
 
                     if is_eof {
-                        debug!(channel = ?update.number, "Received EOF, closing channel");
+                        debug!(channel = %update.number, "Received EOF, closing channel");
 
                         state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
                     }

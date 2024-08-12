@@ -137,7 +137,7 @@ impl ServerConnection {
         self.packet_transport.recv_bytes(bytes)?;
 
         while let Some(packet) = self.packet_transport.recv_next_packet() {
-            trace!(packet_type = ?packet.payload.get(0), packet_len = ?packet.payload.len(), "Received packet");
+            trace!(packet_type = %packet.payload.get(0).unwrap_or(&0xFF), packet_len = %packet.payload.len(), "Received packet");
 
             // Handle some packets ignoring the state.
             match packet.payload.get(0).copied() {
@@ -148,7 +148,7 @@ impl ServerConnection {
                     let description = disconnect.utf8_string()?;
                     let _language_tag = disconnect.utf8_string()?;
 
-                    info!(?reason, ?description, "Client disconnecting");
+                    info!(%reason, %description, "Client disconnecting");
 
                     return Ok(());
                 }
@@ -169,8 +169,8 @@ impl ServerConnection {
                             Ok(expected)
                         } else {
                             Err(client_error!(
-                                    "client does not supported algorithm {expected}. supported: {list:?}",
-                                ))
+                                "client does not supported algorithm {expected}. supported: {list:?}",
+                            ))
                         }
                     };
 
@@ -341,7 +341,7 @@ impl ServerConnection {
                     }
                     let mut p = Parser::new(&packet.payload[1..]);
                     let service = p.utf8_string()?;
-                    debug!(?service, "Client requesting service");
+                    debug!(%service, "Client requesting service");
 
                     if service != "ssh-userauth" {
                         return Err(client_error!("only supports ssh-userauth"));

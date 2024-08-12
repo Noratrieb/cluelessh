@@ -9,6 +9,12 @@ use ssh_transport::Result;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChannelNumber(pub u32);
 
+impl std::fmt::Display for ChannelNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
 pub struct ServerChannelsState {
     packets_to_send: VecDeque<Packet>,
     channel_updates: VecDeque<ChannelUpdate>,
@@ -115,7 +121,7 @@ impl ServerChannelsState {
             Packet::SSH_MSG_GLOBAL_REQUEST => {
                 let request_name = packet.utf8_string()?;
                 let want_reply = packet.bool()?;
-                debug!(?request_name, ?want_reply, "Received global request");
+                debug!(%request_name, %want_reply, "Received global request");
 
                 self.packets_to_send
                     .push_back(Packet::new_msg_request_failure());
@@ -127,7 +133,7 @@ impl ServerChannelsState {
                 let initial_window_size = packet.u32()?;
                 let max_packet_size = packet.u32()?;
 
-                debug!(?channel_type, ?sender_channel, "Opening channel");
+                debug!(%channel_type, %sender_channel, "Opening channel");
 
                 let update_message = match channel_type {
                     "session" => ChannelOpen::Session,
@@ -170,7 +176,7 @@ impl ServerChannelsState {
                     kind: ChannelUpdateKind::Open(update_message),
                 });
 
-                debug!(?channel_type, ?our_number, "Successfully opened channel");
+                debug!(%channel_type, %our_number, "Successfully opened channel");
             }
             Packet::SSH_MSG_CHANNEL_DATA => {
                 let our_channel = packet.u32()?;
@@ -219,7 +225,7 @@ impl ServerChannelsState {
                 let request_type = packet.utf8_string()?;
                 let want_reply = packet.bool()?;
 
-                debug!(?our_channel, ?request_type, "Got channel request");
+                debug!(%our_channel, %request_type, "Got channel request");
 
                 let channel = self.channel(our_channel)?;
                 let peer_channel = channel.peer_channel;
@@ -234,10 +240,10 @@ impl ServerChannelsState {
                         let term_modes = packet.string()?;
 
                         debug!(
-                            ?our_channel,
-                            ?term,
-                            ?width_chars,
-                            ?height_rows,
+                            %our_channel,
+                            %term,
+                            %width_chars,
+                            %height_rows,
                             "Trying to open a terminal"
                         );
 
@@ -252,12 +258,12 @@ impl ServerChannelsState {
                         }
                     }
                     "shell" => {
-                        info!(?our_channel, "Opening shell");
+                        info!(%our_channel, "Opening shell");
                         ChannelRequest::Shell { want_reply }
                     }
                     "exec" => {
                         let command = packet.string()?;
-                        info!(?our_channel, command = ?String::from_utf8_lossy(command), "Executing command");
+                        info!(%our_channel, command = %String::from_utf8_lossy(command), "Executing command");
                         ChannelRequest::Exec {
                             want_reply,
                             command: command.to_owned(),
@@ -267,7 +273,7 @@ impl ServerChannelsState {
                         let name = packet.utf8_string()?;
                         let value = packet.string()?;
 
-                        info!(?our_channel, ?name, value = ?String::from_utf8_lossy(value), "Setting environment variable");
+                        info!(%our_channel, %name, value = %String::from_utf8_lossy(value), "Setting environment variable");
 
                         ChannelRequest::Env {
                             want_reply,
@@ -276,12 +282,12 @@ impl ServerChannelsState {
                         }
                     }
                     "signal" => {
-                        debug!(?our_channel, "Received signal");
+                        debug!(%our_channel, "Received signal");
                         // Ignore signals, something we can do.
                         return Ok(());
                     }
                     _ => {
-                        warn!(?request_type, ?our_channel, "Unknown channel request");
+                        warn!(%request_type, %our_channel, "Unknown channel request");
                         self.send_channel_failure(peer_channel);
                         return Ok(());
                     }
