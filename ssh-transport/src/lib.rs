@@ -195,6 +195,7 @@ impl ServerConnection {
                     let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
+                    // TODO: support ecdsa-sha2-nistp256
                     let server_host_key_algorithm =
                         require_algorithm("ssh-ed25519", kex.server_host_key_algorithms)?;
 
