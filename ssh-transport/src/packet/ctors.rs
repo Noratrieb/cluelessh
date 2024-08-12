@@ -88,6 +88,9 @@ ctors! {
 
     fn new_msg_channel_eof(SSH_MSG_CHANNEL_EOF; recipient_channel: u32);
     fn new_msg_channel_close(SSH_MSG_CHANNEL_CLOSE; recipient_channel: u32);
+
+    fn new_msg_channel_request_exit_status(SSH_MSG_CHANNEL_REQUEST; recipient_channel: u32, kind_exit_status: string, false_: bool, exit_status: u32);
+
     fn new_msg_channel_success(SSH_MSG_CHANNEL_SUCCESS; recipient_channel: u32);
     fn new_msg_channel_failure(SSH_MSG_CHANNEL_FAILURE; recipient_channel: u32);
 }

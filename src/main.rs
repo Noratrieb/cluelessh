@@ -8,7 +8,7 @@ use tokio::{
 use tracing::{debug, error, info, info_span, Instrument};
 
 use ssh_protocol::{
-    connection::{ChannelOpen, ChannelOperationKind, ChannelRequestKind},
+    connection::{ChannelOpen, ChannelOperationKind, ChannelRequest},
     transport::{self, ThreadRngRand},
     ChannelUpdateKind, ServerConnection, SshStatus,
 };
@@ -16,11 +16,16 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    if std::env::var("FAKESSH_JSON_LOGS").is_ok_and(|v| v != "0") {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    }
 
     let addr = std::env::var("FAKESSH_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:2222".to_owned());
 
@@ -43,7 +48,7 @@ async fn main() -> eyre::Result<()> {
                     error!(?err, "error handling connection");
                 }
 
-                info!(data = ?String::from_utf8_lossy(&total_sent_data), "Finished connection");
+                info!(stdin = ?String::from_utf8_lossy(&total_sent_data), "Finished connection");
             }
             .instrument(span),
         );
@@ -108,23 +113,47 @@ async fn handle_connection(
                     }
                 },
                 ChannelUpdateKind::Request(req) => {
-                    match req.kind {
-                        ChannelRequestKind::PtyReq { .. } => {}
-                        ChannelRequestKind::Shell => {}
-                        ChannelRequestKind::Exec { command } => {
-                            if command == b"uname -s -v -n -r -m" {
-                                state.do_operation(update.number.construct_op(ChannelOperationKind::Data(
-                                    b"Linux nixos 6.6.35 #1-NixOS SMP PREEMPT_DYNAMIC Fri Jun 21 12:38:50 UTC 2024 x86_64\r\n".to_vec()
-                                )));
+                    let success = update.number.construct_op(ChannelOperationKind::Success);
+                    match req {
+                        ChannelRequest::PtyReq { want_reply, .. } => {
+                            if want_reply {
+                                state.do_operation(success);
                             }
                         }
-                        ChannelRequestKind::Env { .. } => {}
+                        ChannelRequest::Shell { want_reply } => {
+                            if want_reply {
+                                state.do_operation(success);
+                            }
+                        }
+                        ChannelRequest::Exec {
+                            want_reply,
+                            command,
+                        } => {
+                            if want_reply {
+                                state.do_operation(success);
+                            }
+
+                            let result = execute_command(&command);
+                            state.do_operation(
+                                update
+                                    .number
+                                    .construct_op(ChannelOperationKind::Data(result.stdout)),
+                            );
+                            state.do_operation(update.number.construct_op(
+                                ChannelOperationKind::Request(ChannelRequest::ExitStatus {
+                                    status: result.status,
+                                }),
+                            ));
+                            state.do_operation(
+                                update.number.construct_op(ChannelOperationKind::Eof),
+                            );
+                            state.do_operation(
+                                update.number.construct_op(ChannelOperationKind::Close),
+                            );
+                        }
+                        ChannelRequest::ExitStatus { .. } => {}
+                        ChannelRequest::Env { .. } => {}
                     };
-                    if req.want_reply {
-                        state.do_operation(
-                            update.number.construct_op(ChannelOperationKind::Success),
-                        );
-                    }
                 }
                 ChannelUpdateKind::Data { data } => {
                     let is_eof = data.contains(&0x03 /*EOF, Ctrl-C*/);
@@ -155,6 +184,49 @@ async fn handle_connection(
             conn.write_all(&msg.to_bytes())
                 .await
                 .wrap_err("writing response")?;
+        }
+    }
+}
+
+struct ProcessOutput {
+    status: u32,
+    stdout: Vec<u8>,
+}
+
+const UNAME_SVNRM: &[u8] =
+    b"Linux ubuntu 5.15.0-105-generic #115-Ubuntu SMP Mon Apr 15 09:52:04 UTC 2024 x86_64\r\n";
+const UNAME_A: &[u8] =
+    b"Linux ubuntu 5.15.0-105-generic #115-Ubuntu SMP Mon Apr 15 09:52:04 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux\r\n";
+const CPUINFO_UNAME_A: &[u8] = b"      4  AMD EPYC 7282 16-Core Processor\r\n\
+Linux vps2 5.15.0-105-generic #115-Ubuntu SMP Mon Apr 15 09:52:04 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux\r\n";
+
+fn execute_command(command: &[u8]) -> ProcessOutput {
+    let Ok(command) = std::str::from_utf8(command) else {
+        return ProcessOutput {
+            status: 1,
+            stdout: b"what the hell".to_vec(),
+        };
+    };
+    match command {
+        "uname -s -v -n -r -m" => ProcessOutput {
+            status: 0,
+            stdout: UNAME_SVNRM.to_vec(),
+        },
+        "uname -a" => ProcessOutput {
+            status: 0,
+            stdout: UNAME_A.to_vec(),
+        },
+        "cat /proc/cpuinfo|grep name|cut -f2 -d':'|uniq -c ; uname -a" => ProcessOutput {
+            status: 0,
+            stdout: CPUINFO_UNAME_A.to_vec(),
+        },
+        _ => {
+            let argv0 = command.split_ascii_whitespace().next().unwrap_or("");
+
+            ProcessOutput {
+                status: 127,
+                stdout: format!("bash: line 1: {argv0}: command not found\r\n").into_bytes(),
+            }
         }
     }
 }

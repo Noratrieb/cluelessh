@@ -162,16 +162,17 @@ impl ServerConnection {
                 } => {
                     let kex = KeyExchangeInitPacket::parse(&packet.payload)?;
 
-                    let require_algorithm =
-                        |expected: &'static str, list: NameList<'_>| -> Result<&'static str> {
-                            if list.iter().any(|alg| alg == expected) {
-                                Ok(expected)
-                            } else {
-                                Err(client_error!(
+                    let require_algorithm = |expected: &'static str,
+                                             list: NameList<'_>|
+                     -> Result<&'static str> {
+                        if list.iter().any(|alg| alg == expected) {
+                            Ok(expected)
+                        } else {
+                            Err(client_error!(
                                     "client does not supported algorithm {expected}. supported: {list:?}",
                                 ))
-                            }
-                        };
+                        }
+                    };
 
                     let key_algorithm = require_algorithm("curve25519-sha256", kex.kex_algorithms)?;
                     let server_host_key_algorithm =

@@ -43,13 +43,10 @@ pub enum ChannelOpen {
     Session,
 }
 
-pub struct ChannelRequest {
-    pub want_reply: bool,
-    pub kind: ChannelRequestKind,
-}
-
-pub enum ChannelRequestKind {
+pub enum ChannelRequest {
     PtyReq {
+        want_reply: bool,
+
         term: String,
         width_chars: u32,
         height_rows: u32,
@@ -57,13 +54,22 @@ pub enum ChannelRequestKind {
         height_px: u32,
         term_modes: Vec<u8>,
     },
-    Shell,
+    Shell {
+        want_reply: bool,
+    },
     Exec {
+        want_reply: bool,
+
         command: Vec<u8>,
     },
     Env {
+        want_reply: bool,
+
         name: String,
         value: Vec<u8>,
+    },
+    ExitStatus {
+        status: u32,
     },
 }
 
@@ -85,6 +91,8 @@ pub enum ChannelOperationKind {
     Success,
     Failure,
     Data(Vec<u8>),
+    Request(ChannelRequest),
+    Eof,
     Close,
 }
 
@@ -216,7 +224,7 @@ impl ServerChannelsState {
                 let channel = self.channel(our_channel)?;
                 let peer_channel = channel.peer_channel;
 
-                let channel_request_kind = match request_type {
+                let channel_request = match request_type {
                     "pty-req" => {
                         let term = packet.utf8_string()?;
                         let width_chars = packet.u32()?;
@@ -233,7 +241,8 @@ impl ServerChannelsState {
                             "Trying to open a terminal"
                         );
 
-                        ChannelRequestKind::PtyReq {
+                        ChannelRequest::PtyReq {
+                            want_reply,
                             term: term.to_owned(),
                             width_chars,
                             height_rows,
@@ -244,12 +253,13 @@ impl ServerChannelsState {
                     }
                     "shell" => {
                         info!(?our_channel, "Opening shell");
-                        ChannelRequestKind::Shell
+                        ChannelRequest::Shell { want_reply }
                     }
                     "exec" => {
                         let command = packet.string()?;
                         info!(?our_channel, command = ?String::from_utf8_lossy(command), "Executing command");
-                        ChannelRequestKind::Exec {
+                        ChannelRequest::Exec {
+                            want_reply,
                             command: command.to_owned(),
                         }
                     }
@@ -259,7 +269,8 @@ impl ServerChannelsState {
 
                         info!(?our_channel, ?name, value = ?String::from_utf8_lossy(value), "Setting environment variable");
 
-                        ChannelRequestKind::Env {
+                        ChannelRequest::Env {
+                            want_reply,
                             name: name.to_owned(),
                             value: value.to_owned(),
                         }
@@ -278,10 +289,7 @@ impl ServerChannelsState {
 
                 self.channel_updates.push_back(ChannelUpdate {
                     number: our_channel,
-                    kind: ChannelUpdateKind::Request(ChannelRequest {
-                        want_reply,
-                        kind: channel_request_kind,
-                    }),
+                    kind: ChannelUpdateKind::Request(channel_request),
                 })
             }
             _ => {
@@ -311,6 +319,27 @@ impl ServerChannelsState {
             ChannelOperationKind::Data(data) => {
                 self.packets_to_send
                     .push_back(Packet::new_msg_channel_data(peer, &data));
+            }
+            ChannelOperationKind::Request(req) => {
+                let packet = match req {
+                    ChannelRequest::PtyReq { .. } => todo!("pty-req"),
+                    ChannelRequest::Shell { .. } => todo!("shell"),
+                    ChannelRequest::Exec { .. } => todo!("exec"),
+                    ChannelRequest::Env { .. } => todo!("env"),
+                    ChannelRequest::ExitStatus { status } => {
+                        Packet::new_msg_channel_request_exit_status(
+                            peer,
+                            b"exit-status",
+                            false,
+                            status,
+                        )
+                    }
+                };
+                self.packets_to_send.push_back(packet);
+            }
+            ChannelOperationKind::Eof => {
+                self.packets_to_send
+                    .push_back(Packet::new_msg_channel_eof(peer));
             }
             ChannelOperationKind::Close => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
