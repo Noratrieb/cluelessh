@@ -1,3 +1,4 @@
+use aes_gcm::aead::{Aead, AeadMutInPlace};
 use chacha20::cipher::{KeyInit, StreamCipher, StreamCipherSeek};
 use sha2::Digest;
 use subtle::ConstantTimeEq;
@@ -81,9 +82,11 @@ pub const KEX_ECDH_SHA2_NISTP256: KexAlgorithm = KexAlgorithm {
 #[derive(Clone, Copy)]
 pub struct EncryptionAlgorithm {
     name: &'static str,
-    decrypt_len: fn(keys: &[u8], bytes: &mut [u8], packet_number: u64),
-    decrypt_packet: fn(keys: &[u8], bytes: RawPacket, packet_number: u64) -> Result<Packet>,
-    encrypt_packet: fn(keys: &[u8], packet: Packet, packet_number: u64) -> EncryptedPacket,
+    iv_size: usize,
+    key_size: usize,
+    decrypt_len: fn(state: &mut [u8], bytes: &mut [u8], packet_number: u64),
+    decrypt_packet: fn(state: &mut [u8], bytes: RawPacket, packet_number: u64) -> Result<Packet>,
+    encrypt_packet: fn(state: &mut [u8], packet: Packet, packet_number: u64) -> EncryptedPacket,
 }
 impl AlgorithmName for EncryptionAlgorithm {
     fn name(&self) -> &'static str {
@@ -92,16 +95,35 @@ impl AlgorithmName for EncryptionAlgorithm {
 }
 pub const ENC_CHACHA20POLY1305: EncryptionAlgorithm = EncryptionAlgorithm {
     name: "chacha20-poly1305@openssh.com",
-    decrypt_len: |keys, bytes, packet_number| {
-        let alg = SshChaCha20Poly1305::from_keys(keys);
+    iv_size: 0,
+    key_size: 64, // 32 for header, 32 for main
+    decrypt_len: |state, bytes, packet_number| {
+        let alg = ChaCha20Poly1305OpenSsh::from_state(state);
         alg.decrypt_len(bytes, packet_number)
     },
-    decrypt_packet: |keys, bytes, packet_number| {
-        let alg = SshChaCha20Poly1305::from_keys(keys);
+    decrypt_packet: |state, bytes, packet_number| {
+        let alg = ChaCha20Poly1305OpenSsh::from_state(state);
         alg.decrypt_packet(bytes, packet_number)
     },
-    encrypt_packet: |keys, packet, packet_number| {
-        let alg = SshChaCha20Poly1305::from_keys(keys);
+    encrypt_packet: |state, packet, packet_number| {
+        let alg = ChaCha20Poly1305OpenSsh::from_state(state);
+        alg.encrypt_packet(packet, packet_number)
+    },
+};
+pub const ENC_AES256_GCM: EncryptionAlgorithm = EncryptionAlgorithm {
+    name: "aes256-gcm@openssh.com",
+    iv_size: 12,
+    key_size: 32,
+    decrypt_len: |state, bytes, packet_number| {
+        let mut alg = Aes256GcmOpenSsh::from_state(state);
+        alg.decrypt_len(bytes, packet_number)
+    },
+    decrypt_packet: |state, bytes, packet_number| {
+        let mut alg = Aes256GcmOpenSsh::from_state(state);
+        alg.decrypt_packet(bytes, packet_number)
+    },
+    encrypt_packet: |state, packet, packet_number| {
+        let mut alg = Aes256GcmOpenSsh::from_state(state);
         alg.encrypt_packet(packet, packet_number)
     },
 };
@@ -130,10 +152,14 @@ impl<T: AlgorithmName> AlgorithmNegotiation<T> {
 
 pub(crate) struct Session {
     session_id: [u8; 32],
-    encryption_key_client_to_server: [u8; 64],
-    encryption_client_to_server: EncryptionAlgorithm,
-    encryption_key_server_to_client: [u8; 64],
-    encryption_server_to_client: EncryptionAlgorithm,
+    client_to_server: Tunnel,
+    server_to_client: Tunnel,
+}
+
+struct Tunnel {
+    /// `key || IV`
+    state: Vec<u8>,
+    algorithm: EncryptionAlgorithm,
 }
 
 pub(crate) trait Keys: Send + Sync + 'static {
@@ -196,20 +222,27 @@ impl Session {
         session_id: [u8; 32],
         h: [u8; 32],
         k: &[u8],
-        encryption_client_to_server: EncryptionAlgorithm,
-        encryption_server_to_client: EncryptionAlgorithm,
+        alg_c2s: EncryptionAlgorithm,
+        alg_s2c: EncryptionAlgorithm,
     ) -> Self {
-        let encryption_key_client_to_server = derive_key(k, h, "C", session_id);
-        let encryption_key_server_to_client = derive_key(k, h, "D", session_id);
-
         Self {
             session_id,
-            // client_to_server_iv: derive("A").into(),
-            // server_to_client_iv: derive("B").into(),
-            encryption_key_client_to_server,
-            encryption_client_to_server,
-            encryption_key_server_to_client,
-            encryption_server_to_client,
+            client_to_server: Tunnel {
+                algorithm: alg_c2s,
+                state: {
+                    let mut state = derive_key(k, h, "C", session_id, alg_c2s.key_size);
+                    state.extend_from_slice(&derive_key(k, h, "A", session_id, alg_c2s.iv_size));
+                    state
+                },
+            },
+            server_to_client: Tunnel {
+                algorithm: alg_s2c,
+                state: {
+                    let mut state = derive_key(k, h, "D", session_id, alg_s2c.key_size);
+                    state.extend_from_slice(&derive_key(k, h, "B", session_id, alg_s2c.iv_size));
+                    state
+                },
+            },
             // integrity_key_client_to_server: derive("E").into(),
             // integrity_key_server_to_client: derive("F").into(),
         }
@@ -218,24 +251,24 @@ impl Session {
 
 impl Keys for Session {
     fn decrypt_len(&mut self, bytes: &mut [u8; 4], packet_number: u64) {
-        (self.encryption_client_to_server.decrypt_len)(
-            &self.encryption_key_client_to_server,
+        (self.client_to_server.algorithm.decrypt_len)(
+            &mut self.client_to_server.state,
             bytes,
             packet_number,
         );
     }
 
     fn decrypt_packet(&mut self, bytes: RawPacket, packet_number: u64) -> Result<Packet> {
-        (self.encryption_client_to_server.decrypt_packet)(
-            &self.encryption_key_client_to_server,
+        (self.client_to_server.algorithm.decrypt_packet)(
+            &mut self.client_to_server.state,
             bytes,
             packet_number,
         )
     }
 
     fn encrypt_packet_to_msg(&mut self, packet: Packet, packet_number: u64) -> Msg {
-        let packet = (self.encryption_server_to_client.encrypt_packet)(
-            &self.encryption_key_server_to_client,
+        let packet = (self.server_to_client.algorithm.encrypt_packet)(
+            &mut self.server_to_client.state,
             packet,
             packet_number,
         );
@@ -266,9 +299,15 @@ impl Keys for Session {
 
 /// Derive a key from the shared secret K and exchange hash H.
 /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
-fn derive_key(k: &[u8], h: [u8; 32], letter: &str, session_id: [u8; 32]) -> [u8; 64] {
+fn derive_key(
+    k: &[u8],
+    h: [u8; 32],
+    letter: &str,
+    session_id: [u8; 32],
+    key_size: usize,
+) -> Vec<u8> {
     let sha2len = sha2::Sha256::output_size();
-    let mut output = [0; 64];
+    let mut output = vec![0; key_size];
 
     //let mut hash = sha2::Sha256::new();
     //encode_mpint_for_hash(&k, |data| hash.update(data));
@@ -277,7 +316,7 @@ fn derive_key(k: &[u8], h: [u8; 32], letter: &str, session_id: [u8; 32]) -> [u8;
     //hash.update(session_id);
     //output[..sha2len].copy_from_slice(&hash.finalize());
 
-    for i in 0..(64 / sha2len) {
+    for i in 0..(key_size / sha2len) {
         let mut hash = <sha2::Sha256 as sha2::Digest>::new();
         encode_mpint_for_hash(&k, |data| hash.update(data));
         hash.update(h);
@@ -311,13 +350,14 @@ pub(crate) fn encode_mpint_for_hash(mut key: &[u8], mut add_to_hash: impl FnMut(
 /// `chacha20-poly1305@openssh.com` uses a 64-bit nonce, not the 96-bit one in the IETF version.
 type SshChaCha20 = chacha20::ChaCha20Legacy;
 
-struct SshChaCha20Poly1305 {
+/// <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL.chacha20poly1305>
+struct ChaCha20Poly1305OpenSsh {
     header_key: chacha20::Key,
     main_key: chacha20::Key,
 }
 
-impl SshChaCha20Poly1305 {
-    fn from_keys(keys: &[u8]) -> Self {
+impl ChaCha20Poly1305OpenSsh {
+    fn from_state(keys: &[u8]) -> Self {
         assert_eq!(keys.len(), 64);
         Self {
             main_key: <[u8; 32]>::try_from(&keys[..32]).unwrap().into(),
@@ -370,7 +410,7 @@ impl SshChaCha20Poly1305 {
     }
 
     fn encrypt_packet(&self, packet: Packet, packet_number: u64) -> EncryptedPacket {
-        let mut bytes = packet.to_bytes(false);
+        let mut bytes = packet.to_bytes(false, Packet::DEFAULT_BLOCK_SIZE);
 
         // Prepare the main cipher.
         let mut main_cipher = <SshChaCha20 as chacha20::cipher::KeyIvInit>::new(
@@ -402,5 +442,83 @@ impl SshChaCha20Poly1305 {
         bytes.extend_from_slice(mac.as_slice());
 
         EncryptedPacket::from_encrypted_full_bytes(bytes)
+    }
+}
+
+/// <https://datatracker.ietf.org/doc/html/rfc5647>
+/// <https://github.com/openssh/openssh-portable/blob/1ec0a64c5dc57b8a2053a93b5ef0d02ff8598e5c/PROTOCOL#L188C49-L188C64>
+struct Aes256GcmOpenSsh<'a> {
+    key: aes_gcm::Key<aes_gcm::Aes256Gcm>,
+    nonce: &'a mut [u8; 12],
+}
+
+impl<'a> Aes256GcmOpenSsh<'a> {
+    fn from_state(keys: &'a mut [u8]) -> Self {
+        assert_eq!(keys.len(), 44);
+        Self {
+            key: <[u8; 32]>::try_from(&keys[..32]).unwrap().into(),
+            nonce: <&mut [u8; 12]>::try_from(&mut keys[32..]).unwrap(),
+        }
+    }
+
+    fn decrypt_len(&mut self, _: &mut [u8], _: u64) {
+        // AES-GCM does not encrypt the length.
+        // <https://datatracker.ietf.org/doc/html/rfc5647#section-7.3>
+    }
+
+    fn decrypt_packet(&mut self, mut bytes: RawPacket, _packet_number: u64) -> Result<Packet> {
+        let mut cipher = aes_gcm::Aes256Gcm::new(&self.key);
+
+        let mut len = [0; 4];
+        len.copy_from_slice(&bytes.full_packet()[..4]);
+
+        let tag_offset = bytes.full_packet().len() - 16;
+        let mut tag = [0; 16];
+        tag.copy_from_slice(&bytes.full_packet()[tag_offset..]);
+
+        let encrypted_packet_content = bytes.content_mut();
+
+        cipher
+            .decrypt_in_place_detached(
+                (&*self.nonce).into(),
+                &len,
+                encrypted_packet_content,
+                (&tag).into(),
+            )
+            .map_err(|_| crate::client_error!("failed to decrypt: invalid GCM MAC"))?;
+        self.inc_nonce();
+
+        Packet::from_full(encrypted_packet_content)
+    }
+
+    fn encrypt_packet(&mut self, packet: Packet, _packet_number: u64) -> EncryptedPacket {
+        let bytes = packet.to_bytes(
+            false,
+            <aes_gcm::aes::Aes256 as aes_gcm::aes::cipher::BlockSizeUser>::block_size() as u8,
+        );
+
+        let cipher = aes_gcm::Aes256Gcm::new(&self.key);
+
+        let bytes = cipher
+            .encrypt(
+                (&*self.nonce).into(),
+                aes_gcm::aead::Payload {
+                    aad: &bytes[..4],
+                    msg: &bytes[4..],
+                },
+            )
+            .unwrap();
+        self.inc_nonce();
+
+        EncryptedPacket::from_encrypted_full_bytes(bytes)
+    }
+
+    fn inc_nonce(&mut self) {
+        let mut carry = 1;
+        for i in (0..self.nonce.len()).rev() {
+            let n = self.nonce[i] as u16 + carry;
+            self.nonce[i] = n as u8;
+            carry = n >> 8;
+        }
     }
 }

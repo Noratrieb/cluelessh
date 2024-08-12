@@ -1,4 +1,4 @@
-mod keys;
+mod crypto;
 pub mod packet;
 pub mod parse;
 
@@ -6,7 +6,7 @@ use core::str;
 use std::{collections::VecDeque, mem::take};
 
 use ed25519_dalek::ed25519::signature::Signer;
-use keys::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm};
+use crypto::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm};
 use packet::{
     DhKeyExchangeInitReplyPacket, KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet,
     PacketTransport, SshPublicKey, SshSignature,
@@ -63,7 +63,7 @@ enum ServerState {
         client_identification: Vec<u8>,
         client_kexinit: Vec<u8>,
         server_kexinit: Vec<u8>,
-        kex_algorithm: keys::KexAlgorithm,
+        kex_algorithm: crypto::KexAlgorithm,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },
@@ -179,7 +179,7 @@ impl ServerConnection {
                         };
 
                     let kex_algorithms = AlgorithmNegotiation {
-                        supported: vec![keys::KEX_CURVE_25519_SHA256, keys::KEX_ECDH_SHA2_NISTP256],
+                        supported: vec![crypto::KEX_CURVE_25519_SHA256, crypto::KEX_ECDH_SHA2_NISTP256],
                     };
                     let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;
 
@@ -187,13 +187,12 @@ impl ServerConnection {
                         require_algorithm("ssh-ed25519", kex.server_host_key_algorithms)?;
 
                     let encryption_algorithms_client_to_server = AlgorithmNegotiation {
-                        supported: vec![keys::ENC_CHACHA20POLY1305],
+                        supported: vec![crypto::ENC_CHACHA20POLY1305, crypto::ENC_AES256_GCM],
                     };
                     let encryption_algorithms_server_to_client = AlgorithmNegotiation {
-                        supported: vec![keys::ENC_CHACHA20POLY1305],
+                        supported: vec![crypto::ENC_CHACHA20POLY1305, crypto::ENC_AES256_GCM],
                     };
 
-                    // TODO: support aes256-gcm@openssh.com
                     let encryption_client_to_server = encryption_algorithms_client_to_server
                         .find(kex.encryption_algorithms_client_to_server.0)?;
                     let encryption_server_to_client = encryption_algorithms_server_to_client
@@ -270,7 +269,7 @@ impl ServerConnection {
 
                     let client_public_key = dh.qc;
 
-                    let keys::KexAlgorithmOutput {
+                    let crypto::KexAlgorithmOutput {
                         server_public_key,
                         shared_secret,
                     } = (kex_algorithm.exchange)(client_public_key, &mut *self.rng)?;
@@ -289,7 +288,7 @@ impl ServerConnection {
                         add_hash(hash, bytes);
                     };
                     let hash_mpint = |hash: &mut sha2::Sha256, bytes: &[u8]| {
-                        keys::encode_mpint_for_hash(bytes, |data| add_hash(hash, data));
+                        crypto::encode_mpint_for_hash(bytes, |data| add_hash(hash, data));
                     };
 
                     hash_string(

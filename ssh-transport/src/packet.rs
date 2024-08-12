@@ -3,7 +3,7 @@ mod ctors;
 use std::collections::VecDeque;
 
 use crate::client_error;
-use crate::keys::{EncryptionAlgorithm, Keys, Plaintext, Session};
+use crate::crypto::{EncryptionAlgorithm, Keys, Plaintext, Session};
 use crate::parse::{NameList, Parser, Writer};
 use crate::Result;
 
@@ -33,7 +33,7 @@ impl Msg {
     pub fn to_bytes(self) -> Vec<u8> {
         match self.0 {
             MsgKind::ServerProtocolInfo => crate::SERVER_IDENTIFICATION.to_vec(),
-            MsgKind::PlaintextPacket(v) => v.to_bytes(true),
+            MsgKind::PlaintextPacket(v) => v.to_bytes(true, Packet::DEFAULT_BLOCK_SIZE),
             MsgKind::EncryptedPacket(v) => v.into_bytes(),
         }
     }
@@ -199,6 +199,8 @@ impl Packet {
     pub const SSH_MSG_CHANNEL_SUCCESS: u8 = 99;
     pub const SSH_MSG_CHANNEL_FAILURE: u8 = 100;
 
+    pub const DEFAULT_BLOCK_SIZE: u8 = 8;
+
     pub(crate) fn from_full(bytes: &[u8]) -> Result<Self> {
         let Some(padding_length) = bytes.first() else {
             return Err(client_error!("empty packet"));
@@ -219,17 +221,20 @@ impl Packet {
         })
     }
 
-    pub(crate) fn to_bytes(&self, respect_len_for_padding: bool) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self, respect_len_for_padding: bool, block_size: u8) -> Vec<u8> {
+        assert!(block_size.is_power_of_two());
+
         let let_bytes = if respect_len_for_padding { 4 } else { 0 };
 
         // <https://datatracker.ietf.org/doc/html/rfc4253#section-6>
         let min_full_length = self.payload.len() + let_bytes + 1;
 
-        // The padding must give a factor of 8.
-        let min_padding_len = (min_full_length.next_multiple_of(8) - min_full_length) as u8;
+        // The padding must give a factor of block_size.
+        let min_padding_len =
+            (min_full_length.next_multiple_of(block_size as usize) - min_full_length) as u8;
         // > There MUST be at least four bytes of padding.
         let padding_len = if min_padding_len < 4 {
-            min_padding_len + 8
+            min_padding_len + block_size
         } else {
             min_padding_len
         };
