@@ -473,6 +473,16 @@ impl PacketParser {
             }
         };
 
+        // <https://datatracker.ietf.org/doc/html/rfc4253#section-6.1>
+        // All implementations MUST be able to process packets with an
+        // uncompressed payload length of 32768 bytes or less and a total packet
+        // size of 35000 bytes or less (including 'packet_length',
+        // 'padding_length', 'payload', 'random padding', and 'mac').
+        // Implementations SHOULD support longer packets, where they might be needed.
+        if packet_length > 500_000 {
+            return Err(client_error!("packet too large (>500_000): {packet_length}"));
+        }
+
         let remaining_len = std::cmp::min(bytes.len(), packet_length - (self.raw_data.len() - 4));
         self.raw_data.extend_from_slice(&bytes[..remaining_len]);
         consumed += remaining_len;
