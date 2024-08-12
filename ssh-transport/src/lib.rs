@@ -175,11 +175,13 @@ impl ServerConnection {
                         }
                     };
 
-                    // TODO: support ecdh-sha2-nistp256
                     let kex_algorithms = AlgorithmNegotiation {
                         supported: vec![(
                             keys::KEX_CURVE_25519_SHA256.name,
                             keys::KEX_CURVE_25519_SHA256,
+                        ), (
+                            keys::KEX_ECDH_SHA2_NISTP256.name,
+                            keys::KEX_ECDH_SHA2_NISTP256,
                         )],
                     };
                     let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;

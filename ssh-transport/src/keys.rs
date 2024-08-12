@@ -45,6 +45,29 @@ pub const KEX_CURVE_25519_SHA256: KexAlgorithm = KexAlgorithm {
         })
     },
 };
+/// <https://datatracker.ietf.org/doc/html/rfc5656>
+pub const KEX_ECDH_SHA2_NISTP256: KexAlgorithm = KexAlgorithm {
+    name: "ecdh-sha2-nistp256",
+    exchange: |client_public_key, rng| {
+        let secret = p256::ecdh::EphemeralSecret::random(&mut crate::SshRngRandAdapter(rng));
+        let server_public_key = p256::EncodedPoint::from(secret.public_key()); // Q_S
+
+        let client_public_key =
+            p256::PublicKey::from_sec1_bytes(client_public_key).map_err(|_| {
+                crate::client_error!(
+                    "invalid p256 public key length: {}",
+                    client_public_key.len()
+                )
+            })?; // Q_C
+
+        let shared_secret = secret.diffie_hellman(&client_public_key); // K
+
+        Ok(KexAlgorithmOutput {
+            server_public_key: server_public_key.as_bytes().to_vec(),
+            shared_secret: shared_secret.raw_secret_bytes().to_vec(),
+        })
+    },
+};
 
 pub struct AlgorithmNegotiation<T> {
     pub supported: Vec<(&'static str, T)>,
