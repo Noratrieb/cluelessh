@@ -51,6 +51,12 @@ ctors! {
     // 1 to 19 Transport layer generic (e.g., disconnect, ignore, debug, etc.)
     // 20 to 29 Algorithm negotiation
     // 30 to 49 Key exchange method specific (numbers can be reused for different authentication methods)
+    fn new_msg_kex_ecdh_init(SSH_MSG_KEX_ECDH_INIT; client_ephemeral_public_key_qc: string);
+    fn new_msg_kex_ecdh_reply(SSH_MSG_KEX_ECDH_REPLY;
+        server_public_host_key_ks: string,
+        server_ephemeral_public_key_qs: string,
+        signature: string,
+    );
 
     // -----
     // User authentication protocol:

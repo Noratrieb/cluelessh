@@ -9,8 +9,8 @@ use std::{collections::VecDeque, mem::take};
 use crypto::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm};
 use ed25519_dalek::ed25519::signature::Signer;
 use packet::{
-    DhKeyExchangeInitReplyPacket, KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet,
-    PacketTransport, SshPublicKey, SshSignature,
+    KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, SshPublicKey,
+    SshSignature,
 };
 use parse::{NameList, Parser, Writer};
 use rand::RngCore;
@@ -193,6 +193,7 @@ impl ServerConnection {
                         ],
                     };
                     let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;
+                    debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
                     let server_host_key_algorithm =
                         require_algorithm("ssh-ed25519", kex.server_host_key_algorithms)?;
@@ -206,8 +207,12 @@ impl ServerConnection {
 
                     let encryption_client_to_server = encryption_algorithms_client_to_server
                         .find(kex.encryption_algorithms_client_to_server.0)?;
+                    debug!(name = %encryption_client_to_server.name(), "Using encryption algorithm C->S");
+
                     let encryption_server_to_client = encryption_algorithms_server_to_client
                         .find(kex.encryption_algorithms_server_to_client.0)?;
+                    debug!(name = %encryption_server_to_client.name(), "Using encryption algorithm S->C");
+
                     let mac_algorithm_client_to_server =
                         require_algorithm("hmac-sha2-256", kex.mac_algorithms_client_to_server)?;
                     let mac_algorithm_server_to_client =
@@ -275,7 +280,6 @@ impl ServerConnection {
                     encryption_client_to_server,
                     encryption_server_to_client,
                 } => {
-                    // TODO: move to keys.rs
                     let dh = KeyExchangeEcDhInitPacket::parse(&packet.payload)?;
 
                     let client_public_key = dh.qc;
@@ -312,7 +316,7 @@ impl ServerConnection {
                     ); // V_S
                     hash_string(&mut hash, client_kexinit); // I_C
                     hash_string(&mut hash, server_kexinit); // I_S
-                    add_hash(&mut hash, &pub_hostkey.to_bytes()); // K_S
+                    hash_string(&mut hash, &pub_hostkey.to_bytes()); // K_S
 
                     // For normal DH as in RFC4253, e and f are mpints.
                     // But for ECDH as defined in RFC5656, Q_C and Q_S are strings.
@@ -333,17 +337,17 @@ impl ServerConnection {
                     // eprintln!("shared_secret:     {:x?}", shared_secret.as_bytes());
                     // eprintln!("hash:              {:x?}", hash);
 
-                    let packet = DhKeyExchangeInitReplyPacket {
-                        public_host_key: pub_hostkey,
-                        ephemeral_public_key: &server_public_key,
-                        signature: SshSignature {
+                    let packet = Packet::new_msg_kex_ecdh_reply(
+                        &pub_hostkey.to_bytes(),
+                        &server_public_key,
+                        &SshSignature {
                             format: b"ssh-ed25519",
                             data: &signature.to_bytes(),
-                        },
-                    };
-                    self.packet_transport.queue_packet(Packet {
-                        payload: packet.to_bytes(),
-                    });
+                        }
+                        .to_bytes(),
+                    );
+
+                    self.packet_transport.queue_packet(packet);
                     self.state = ServerState::NewKeys {
                         h: hash.into(),
                         k: shared_secret,

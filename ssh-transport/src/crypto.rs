@@ -231,10 +231,8 @@ impl Session {
                 algorithm: alg_c2s,
                 state: {
                     let mut state = derive_key(k, h, "C", session_id, alg_c2s.key_size);
-                    eprintln!("k={state:x?}");
                     let iv = derive_key(k, h, "A", session_id, alg_c2s.iv_size);
                     state.extend_from_slice(&iv);
-                    eprintln!("n={iv:x?}");
                     state
                 },
             },

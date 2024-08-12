@@ -159,6 +159,7 @@ impl Packet {
         let payload = &bytes[1..][..payload_len];
 
         // TODO: handle the annoying decryption special case differnt where its +0 instead of +4
+        // also TODO: this depends on the cipher!
         //if (bytes.len() + 4) % 8 != 0 {
         //    return Err(client_error!("full packet length must be multiple of 8: {}", bytes.len()));
         //}
@@ -280,7 +281,7 @@ impl<'a> KeyExchangeInitPacket<'a> {
         let mut data = Writer::new();
 
         data.u8(numbers::SSH_MSG_KEXINIT);
-        data.write(&self.cookie);
+        data.array(self.cookie);
         data.name_list(self.kex_algorithms);
         data.name_list(self.server_host_key_algorithms);
         data.name_list(self.encryption_algorithms_client_to_server);
@@ -325,7 +326,6 @@ pub(crate) struct SshPublicKey<'a> {
 impl SshPublicKey<'_> {
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut data = Writer::new();
-        data.u32((4 + self.format.len() + 4 + self.data.len()) as u32);
         // ed25519-specific!
         // <https://datatracker.ietf.org/doc/html/rfc8709#section-4>
         data.string(self.format);
@@ -339,26 +339,12 @@ pub(crate) struct SshSignature<'a> {
     pub(crate) data: &'a [u8],
 }
 
-#[derive(Debug)]
-pub(crate) struct DhKeyExchangeInitReplyPacket<'a> {
-    /// K_S
-    pub(crate) public_host_key: SshPublicKey<'a>,
-    /// Q_S
-    pub(crate) ephemeral_public_key: &'a [u8],
-    pub(crate) signature: SshSignature<'a>,
-}
-impl<'a> DhKeyExchangeInitReplyPacket<'a> {
+impl SshSignature<'_> {
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut data = Writer::new();
-
-        data.u8(numbers::SSH_MSG_KEX_ECDH_REPLY);
-        data.write(&self.public_host_key.to_bytes());
-        data.string(self.ephemeral_public_key);
-
-        data.u32((4 + self.signature.format.len() + 4 + self.signature.data.len()) as u32);
         // <https://datatracker.ietf.org/doc/html/rfc8709#section-6>
-        data.string(self.signature.format);
-        data.string(self.signature.data);
+        data.string(self.format);
+        data.string(self.data);
         data.finish()
     }
 }

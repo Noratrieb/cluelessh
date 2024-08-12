@@ -96,6 +96,10 @@ impl Writer {
         self.0.extend_from_slice(v);
     }
 
+    pub fn array<const N: usize>(&mut self, arr: [u8; N]) {
+        self.write(&arr);
+    }
+
     pub fn name_list(&mut self, list: NameList<'_>) {
         self.string(list.0.as_bytes());
     }
