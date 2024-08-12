@@ -1,9 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, info, warn};
 
-use ssh_transport::client_error;
 use ssh_transport::packet::Packet;
 use ssh_transport::Result;
+use ssh_transport::{client_error, numbers};
 
 /// A channel number (on our side).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,7 +118,7 @@ impl ServerChannelsState {
         let mut packet = packet.payload_parser();
         let packet_type = packet.u8()?;
         match packet_type {
-            Packet::SSH_MSG_GLOBAL_REQUEST => {
+            numbers::SSH_MSG_GLOBAL_REQUEST => {
                 let request_name = packet.utf8_string()?;
                 let want_reply = packet.bool()?;
                 debug!(%request_name, %want_reply, "Received global request");
@@ -126,7 +126,7 @@ impl ServerChannelsState {
                 self.packets_to_send
                     .push_back(Packet::new_msg_request_failure());
             }
-            Packet::SSH_MSG_CHANNEL_OPEN => {
+            numbers::SSH_MSG_CHANNEL_OPEN => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.1>
                 let channel_type = packet.utf8_string()?;
                 let sender_channel = packet.u32()?;
@@ -141,7 +141,7 @@ impl ServerChannelsState {
                         self.packets_to_send
                             .push_back(Packet::new_msg_channel_open_failure(
                                 sender_channel,
-                                3, // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
+                                numbers::SSH_OPEN_UNKNOWN_CHANNEL_TYPE,
                                 b"unknown channel type",
                                 b"",
                             ));
@@ -178,7 +178,7 @@ impl ServerChannelsState {
 
                 debug!(%channel_type, %our_number, "Successfully opened channel");
             }
-            Packet::SSH_MSG_CHANNEL_DATA => {
+            numbers::SSH_MSG_CHANNEL_DATA => {
                 let our_channel = packet.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
                 let data = packet.string()?;
@@ -190,7 +190,7 @@ impl ServerChannelsState {
                     },
                 });
             }
-            Packet::SSH_MSG_CHANNEL_EOF => {
+            numbers::SSH_MSG_CHANNEL_EOF => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
                 let our_channel = packet.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
@@ -200,7 +200,7 @@ impl ServerChannelsState {
                     kind: ChannelUpdateKind::Eof,
                 });
             }
-            Packet::SSH_MSG_CHANNEL_CLOSE => {
+            numbers::SSH_MSG_CHANNEL_CLOSE => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
                 let our_channel = packet.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
@@ -219,7 +219,7 @@ impl ServerChannelsState {
 
                 debug!("Channel has been closed");
             }
-            Packet::SSH_MSG_CHANNEL_REQUEST => {
+            numbers::SSH_MSG_CHANNEL_REQUEST => {
                 let our_channel = packet.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
                 let request_type = packet.utf8_string()?;

@@ -1,4 +1,5 @@
 mod crypto;
+pub mod numbers;
 pub mod packet;
 pub mod parse;
 
@@ -142,35 +143,23 @@ impl ServerConnection {
         self.packet_transport.recv_bytes(bytes)?;
 
         while let Some(packet) = self.packet_transport.recv_next_packet() {
-            trace!(packet_type = %packet.payload.get(0).unwrap_or(&0xFF), packet_len = %packet.payload.len(), "Received packet");
+            let packet_type = packet.payload.get(0).unwrap_or(&0xFF);
+            let packet_type_string =
+                numbers::packet_type_to_string(*packet_type).unwrap_or("<unknown>");
+
+            trace!(%packet_type, %packet_type_string, packet_len = %packet.payload.len(), "Received packet");
 
             // Handle some packets ignoring the state.
             match packet.payload.get(0).copied() {
-                Some(Packet::SSH_MSG_DISCONNECT) => {
+                Some(numbers::SSH_MSG_DISCONNECT) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.1>
                     let mut disconnect = Parser::new(&packet.payload[1..]);
                     let reason = disconnect.u32()?;
                     let description = disconnect.utf8_string()?;
                     let _language_tag = disconnect.utf8_string()?;
 
-                    let reason_string = match reason {
-                        1 => "SSH_DISCONNECT_HOST_NOT_ALLOWED_TO_CONNECT",
-                        2 => "SSH_DISCONNECT_PROTOCOL_ERROR",
-                        3 => "SSH_DISCONNECT_KEY_EXCHANGE_FAILED",
-                        4 => "SSH_DISCONNECT_RESERVED",
-                        5 => "SSH_DISCONNECT_MAC_ERROR",
-                        6 => "SSH_DISCONNECT_COMPRESSION_ERROR",
-                        7 => "SSH_DISCONNECT_SERVICE_NOT_AVAILABLE",
-                        8 => "SSH_DISCONNECT_PROTOCOL_VERSION_NOT_SUPPORTED",
-                        9 => "SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE",
-                        10 => "SSH_DISCONNECT_CONNECTION_LOST",
-                        11 => "SSH_DISCONNECT_BY_APPLICATION",
-                        12 => "SSH_DISCONNECT_TOO_MANY_CONNECTIONS",
-                        13 => "SSH_DISCONNECT_AUTH_CANCELLED_BY_USER",
-                        14 => "SSH_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE",
-                        15 => "SSH_DISCONNECT_ILLEGAL_USER_NAME",
-                        _ => "<unknown>",
-                    };
+                    let reason_string =
+                        numbers::disconnect_reason_to_string(reason).unwrap_or("<unknown>");
 
                     info!(%reason, %reason_string, %description, "Client disconnecting");
 
@@ -368,12 +357,12 @@ impl ServerConnection {
                     encryption_client_to_server,
                     encryption_server_to_client,
                 } => {
-                    if packet.payload != [Packet::SSH_MSG_NEWKEYS] {
+                    if packet.payload != [numbers::SSH_MSG_NEWKEYS] {
                         return Err(client_error!("did not send SSH_MSG_NEWKEYS"));
                     }
 
                     self.packet_transport.queue_packet(Packet {
-                        payload: vec![Packet::SSH_MSG_NEWKEYS],
+                        payload: vec![numbers::SSH_MSG_NEWKEYS],
                     });
                     self.packet_transport.set_key(
                         *h,
@@ -385,7 +374,7 @@ impl ServerConnection {
                 }
                 ServerState::ServiceRequest => {
                     // TODO: this should probably move out of here? unsure.
-                    if packet.payload.first() != Some(&Packet::SSH_MSG_SERVICE_REQUEST) {
+                    if packet.payload.first() != Some(&numbers::SSH_MSG_SERVICE_REQUEST) {
                         return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
                     }
                     let mut p = Parser::new(&packet.payload[1..]);
@@ -399,7 +388,7 @@ impl ServerConnection {
                     self.packet_transport.queue_packet(Packet {
                         payload: {
                             let mut writer = Writer::new();
-                            writer.u8(Packet::SSH_MSG_SERVICE_ACCEPT);
+                            writer.u8(numbers::SSH_MSG_SERVICE_ACCEPT);
                             writer.string(service.as_bytes());
                             writer.finish()
                         },

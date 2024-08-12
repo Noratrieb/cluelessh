@@ -77,7 +77,7 @@ impl ServerConnection {
 pub mod auth {
     use std::collections::VecDeque;
 
-    use ssh_transport::{client_error, packet::Packet, parse::NameList, Result};
+    use ssh_transport::{client_error, numbers, packet::Packet, parse::NameList, Result};
     use tracing::info;
 
     pub struct BadAuth {
@@ -104,7 +104,7 @@ pub mod auth {
             // It's not very good, but it's good enough for now.
             let mut auth_req = packet.payload_parser();
 
-            if auth_req.u8()? != Packet::SSH_MSG_USERAUTH_REQUEST {
+            if auth_req.u8()? != numbers::SSH_MSG_USERAUTH_REQUEST {
                 return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
             }
             let username = auth_req.utf8_string()?;

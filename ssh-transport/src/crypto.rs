@@ -1,4 +1,4 @@
-use aes_gcm::aead::{Aead, AeadMutInPlace};
+use aes_gcm::aead::AeadMutInPlace;
 use chacha20::cipher::{KeyInit, StreamCipher, StreamCipherSeek};
 use sha2::Digest;
 use subtle::ConstantTimeEq;
@@ -231,7 +231,10 @@ impl Session {
                 algorithm: alg_c2s,
                 state: {
                     let mut state = derive_key(k, h, "C", session_id, alg_c2s.key_size);
-                    state.extend_from_slice(&derive_key(k, h, "A", session_id, alg_c2s.iv_size));
+                    eprintln!("k={state:x?}");
+                    let iv = derive_key(k, h, "A", session_id, alg_c2s.iv_size);
+                    state.extend_from_slice(&iv);
+                    eprintln!("n={iv:x?}");
                     state
                 },
             },
@@ -307,16 +310,10 @@ fn derive_key(
     key_size: usize,
 ) -> Vec<u8> {
     let sha2len = sha2::Sha256::output_size();
-    let mut output = vec![0; key_size];
+    let padded_key_size = key_size.next_multiple_of(sha2len);
+    let mut output = vec![0; padded_key_size];
 
-    //let mut hash = sha2::Sha256::new();
-    //encode_mpint_for_hash(&k, |data| hash.update(data));
-    //hash.update(h);
-    //hash.update(letter.as_bytes());
-    //hash.update(session_id);
-    //output[..sha2len].copy_from_slice(&hash.finalize());
-
-    for i in 0..(key_size / sha2len) {
+    for i in 0..(padded_key_size / sha2len) {
         let mut hash = <sha2::Sha256 as sha2::Digest>::new();
         encode_mpint_for_hash(&k, |data| hash.update(data));
         hash.update(h);
@@ -331,6 +328,7 @@ fn derive_key(
         output[(i * sha2len)..][..sha2len].copy_from_slice(&hash.finalize())
     }
 
+    output.truncate(key_size);
     output
 }
 
@@ -492,22 +490,19 @@ impl<'a> Aes256GcmOpenSsh<'a> {
     }
 
     fn encrypt_packet(&mut self, packet: Packet, _packet_number: u64) -> EncryptedPacket {
-        let bytes = packet.to_bytes(
+        let mut bytes = packet.to_bytes(
             false,
             <aes_gcm::aes::Aes256 as aes_gcm::aes::cipher::BlockSizeUser>::block_size() as u8,
         );
 
-        let cipher = aes_gcm::Aes256Gcm::new(&self.key);
+        let mut cipher = aes_gcm::Aes256Gcm::new(&self.key);
 
-        let bytes = cipher
-            .encrypt(
-                (&*self.nonce).into(),
-                aes_gcm::aead::Payload {
-                    aad: &bytes[..4],
-                    msg: &bytes[4..],
-                },
-            )
+        let (aad, plaintext) = bytes.split_at_mut(4);
+
+        let tag = cipher
+            .encrypt_in_place_detached((&*self.nonce).into(), aad, plaintext)
             .unwrap();
+        bytes.extend_from_slice(&tag);
         self.inc_nonce();
 
         EncryptedPacket::from_encrypted_full_bytes(bytes)

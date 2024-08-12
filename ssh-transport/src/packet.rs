@@ -2,10 +2,10 @@ mod ctors;
 
 use std::collections::VecDeque;
 
-use crate::client_error;
 use crate::crypto::{EncryptionAlgorithm, Keys, Plaintext, Session};
 use crate::parse::{NameList, Parser, Writer};
 use crate::Result;
+use crate::{client_error, numbers};
 
 /// Frames the byte stream into packets.
 pub(crate) struct PacketTransport {
@@ -146,59 +146,6 @@ pub struct Packet {
     pub payload: Vec<u8>,
 }
 impl Packet {
-    // -----
-    // Transport layer protocol:
-
-    // 1 to 19 Transport layer generic (e.g., disconnect, ignore, debug, etc.)
-    pub const SSH_MSG_DISCONNECT: u8 = 1;
-    pub const SSH_MSG_IGNORE: u8 = 2;
-    pub const SSH_MSG_UNIMPLEMENTED: u8 = 3;
-    pub const SSH_MSG_DEBUG: u8 = 4;
-    pub const SSH_MSG_SERVICE_REQUEST: u8 = 5;
-    pub const SSH_MSG_SERVICE_ACCEPT: u8 = 6;
-
-    // 20 to 29 Algorithm negotiation
-    pub const SSH_MSG_KEXINIT: u8 = 20;
-    pub const SSH_MSG_NEWKEYS: u8 = 21;
-
-    // 30 to 49 Key exchange method specific (numbers can be reused for different authentication methods)
-    pub const SSH_MSG_KEXDH_INIT: u8 = 30;
-    pub const SSH_MSG_KEX_ECDH_INIT: u8 = 30; // Same number
-    pub const SSH_MSG_KEXDH_REPLY: u8 = 31;
-    pub const SSH_MSG_KEX_ECDH_REPLY: u8 = 31;
-
-    // -----
-    // User authentication protocol:
-
-    // 50 to 59   User authentication generic
-    pub const SSH_MSG_USERAUTH_REQUEST: u8 = 50;
-    pub const SSH_MSG_USERAUTH_FAILURE: u8 = 51;
-    pub const SSH_MSG_USERAUTH_SUCCESS: u8 = 52;
-    pub const SSH_MSG_USERAUTH_BANNER: u8 = 53;
-
-    //  60 to 79   User authentication method specific (numbers can be reused for different authentication methods)
-
-    // -----
-    // Connection protocol:
-
-    // 80 to 89   Connection protocol generic
-    pub const SSH_MSG_GLOBAL_REQUEST: u8 = 80;
-    pub const SSH_MSG_REQUEST_SUCCESS: u8 = 81;
-    pub const SSH_MSG_REQUEST_FAILURE: u8 = 82;
-
-    // 90 to 127  Channel related messages
-    pub const SSH_MSG_CHANNEL_OPEN: u8 = 90;
-    pub const SSH_MSG_CHANNEL_OPEN_CONFIRMATION: u8 = 91;
-    pub const SSH_MSG_CHANNEL_OPEN_FAILURE: u8 = 92;
-    pub const SSH_MSG_CHANNEL_WINDOW_ADJUST: u8 = 93;
-    pub const SSH_MSG_CHANNEL_DATA: u8 = 94;
-    pub const SSH_MSG_CHANNEL_EXTENDED_DATA: u8 = 95;
-    pub const SSH_MSG_CHANNEL_EOF: u8 = 96;
-    pub const SSH_MSG_CHANNEL_CLOSE: u8 = 97;
-    pub const SSH_MSG_CHANNEL_REQUEST: u8 = 98;
-    pub const SSH_MSG_CHANNEL_SUCCESS: u8 = 99;
-    pub const SSH_MSG_CHANNEL_FAILURE: u8 = 100;
-
     pub const DEFAULT_BLOCK_SIZE: u8 = 8;
 
     pub(crate) fn from_full(bytes: &[u8]) -> Result<Self> {
@@ -291,7 +238,7 @@ impl<'a> KeyExchangeInitPacket<'a> {
         let mut c = Parser::new(payload);
 
         let kind = c.u8()?;
-        if kind != Packet::SSH_MSG_KEXINIT {
+        if kind != numbers::SSH_MSG_KEXINIT {
             return Err(client_error!(
                 "expected SSH_MSG_KEXINIT packet, found {kind}"
             ));
@@ -332,7 +279,7 @@ impl<'a> KeyExchangeInitPacket<'a> {
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut data = Writer::new();
 
-        data.u8(Packet::SSH_MSG_KEXINIT);
+        data.u8(numbers::SSH_MSG_KEXINIT);
         data.write(&self.cookie);
         data.name_list(self.kex_algorithms);
         data.name_list(self.server_host_key_algorithms);
@@ -360,7 +307,7 @@ impl<'a> KeyExchangeEcDhInitPacket<'a> {
         let mut c = Parser::new(payload);
 
         let kind = c.u8()?;
-        if kind != Packet::SSH_MSG_KEX_ECDH_INIT {
+        if kind != numbers::SSH_MSG_KEX_ECDH_INIT {
             return Err(client_error!(
                 "expected SSH_MSG_KEXDH_INIT packet, found {kind}"
             ));
@@ -404,7 +351,7 @@ impl<'a> DhKeyExchangeInitReplyPacket<'a> {
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut data = Writer::new();
 
-        data.u8(Packet::SSH_MSG_KEX_ECDH_REPLY);
+        data.u8(numbers::SSH_MSG_KEX_ECDH_REPLY);
         data.write(&self.public_host_key.to_bytes());
         data.string(self.ephemeral_public_key);
 
