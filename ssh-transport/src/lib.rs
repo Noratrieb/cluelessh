@@ -6,7 +6,7 @@ pub mod parse;
 use core::str;
 use std::{collections::VecDeque, mem::take};
 
-use crypto::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm};
+use crypto::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm, HostKeySigningAlgorithm};
 use ed25519_dalek::ed25519::signature::Signer;
 use packet::{
     KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, SshPublicKey,
@@ -65,6 +65,7 @@ enum ServerState {
         client_kexinit: Vec<u8>,
         server_kexinit: Vec<u8>,
         kex_algorithm: crypto::KexAlgorithm,
+        server_host_key_algorithm: HostKeySigningAlgorithm,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },
@@ -198,8 +199,12 @@ impl ServerConnection {
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
                     // TODO: support ecdsa-sha2-nistp256
+                    let hostkey_algorithms = AlgorithmNegotiation {
+                        supported: vec![crypto::hostkey_ed25519(ED25519_PRIVKEY_BYTES.to_vec())],
+                    };
+
                     let server_host_key_algorithm =
-                        require_algorithm("ssh-ed25519", kex.server_host_key_algorithms)?;
+                        hostkey_algorithms.find(kex.server_host_key_algorithms.0)?;
 
                     let encryption_algorithms_client_to_server = AlgorithmNegotiation {
                         supported: vec![crypto::ENC_CHACHA20POLY1305, crypto::ENC_AES256_GCM],
@@ -237,7 +242,7 @@ impl ServerConnection {
                     let server_kexinit = KeyExchangeInitPacket {
                         cookie: [0; 16],
                         kex_algorithms: NameList::one(kex_algorithm.name()),
-                        server_host_key_algorithms: NameList::one(server_host_key_algorithm),
+                        server_host_key_algorithms: NameList::one(server_host_key_algorithm.name()),
                         encryption_algorithms_client_to_server: NameList::one(
                             encryption_client_to_server.name(),
                         ),
@@ -271,6 +276,7 @@ impl ServerConnection {
                         client_kexinit: packet.payload,
                         server_kexinit: server_kexinit_payload,
                         kex_algorithm,
+                        server_host_key_algorithm,
                         encryption_client_to_server,
                         encryption_server_to_client,
                     };
@@ -280,6 +286,7 @@ impl ServerConnection {
                     client_kexinit,
                     server_kexinit,
                     kex_algorithm,
+                    server_host_key_algorithm,
                     encryption_client_to_server,
                     encryption_server_to_client,
                 } => {
@@ -292,9 +299,22 @@ impl ServerConnection {
                         shared_secret,
                     } = (kex_algorithm.exchange)(client_public_key, &mut *self.rng)?;
 
+                    /*let hostkey =
+                        p256::ecdsa::SigningKey::random(&mut SshRngRandAdapter(&mut *self.rng));
+
+                    eprintln!(
+                        "{}",
+                        hostkey
+                            .to_bytes()
+                            .iter()
+                            .map(|b| format!("0x{b:x}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );*/
+
                     let pub_hostkey = SshPublicKey {
-                        format: b"ssh-ed25519",
-                        data: PUB_HOSTKEY_BYTES,
+                        format: server_host_key_algorithm.name().as_bytes(),
+                        data: &server_host_key_algorithm.public_key(),
                     };
 
                     let mut hash = sha2::Sha256::new();
@@ -330,10 +350,7 @@ impl ServerConnection {
 
                     let hash = hash.finalize();
 
-                    let host_priv_key = ed25519_dalek::SigningKey::from_bytes(PRIVKEY_BYTES);
-                    assert_eq!(PUB_HOSTKEY_BYTES, host_priv_key.verifying_key().as_bytes());
-
-                    let signature = host_priv_key.sign(&hash);
+                    let signature = server_host_key_algorithm.sign(&hash);
 
                     // eprintln!("client_public_key: {:x?}", client_public_key.0);
                     // eprintln!("server_public_key: {:x?}", server_public_key.as_bytes());
@@ -344,8 +361,8 @@ impl ServerConnection {
                         &pub_hostkey.to_bytes(),
                         &server_public_key,
                         &SshSignature {
-                            format: b"ssh-ed25519",
-                            data: &signature.to_bytes(),
+                            format: server_host_key_algorithm.name().as_bytes(),
+                            data: &signature,
                         }
                         .to_bytes(),
                     );
@@ -423,26 +440,27 @@ impl ServerConnection {
     }
 }
 
-// hardcoded test keys. lol.
-const _PUBKEY: &str =
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOk5zfpvwNc3MztTTpE90zLI1Ref4AwwRVdSFyJLGbj2 testkey";
-/// Manually extracted, even worse, <https://superuser.com/questions/1477472/openssh-public-key-file-format>, help
-const PUB_HOSTKEY_BYTES: &[u8; 32] = &[
-    0xe9, 0x39, 0xcd, 0xfa, 0x6f, 0xc0, 0xd7, 0x37, 0x33, 0x3b, 0x53, 0x4e, 0x91, 0x3d, 0xd3, 0x32,
-    0xc8, 0xd5, 0x17, 0x9f, 0xe0, 0x0c, 0x30, 0x45, 0x57, 0x52, 0x17, 0x22, 0x4b, 0x19, 0xb8, 0xf6,
-];
-const _PRIVKEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49gAAAJDpgLSk6YC0
-pAAAAAtzc2gtZWQyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49g
-AAAECSeskxuEtJrr9L7ZkbpogXC5pKRNVHx1ueMX2h1XUnmek5zfpvwNc3MztTTpE90zLI
-1Ref4AwwRVdSFyJLGbj2AAAAB3Rlc3RrZXkBAgMEBQY=
------END OPENSSH PRIVATE KEY-----
-";
 /// Manually extracted from the key using <https://peterlyons.com/problog/2017/12/openssh-ed25519-private-key-file-format/>, probably wrong
-const PRIVKEY_BYTES: &[u8; 32] = &[
+/// ```text
+/// ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOk5zfpvwNc3MztTTpE90zLI1Ref4AwwRVdSFyJLGbj2 testkey
+/// ```
+/// ```text
+/// -----BEGIN OPENSSH PRIVATE KEY-----
+/// b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+/// QyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49gAAAJDpgLSk6YC0
+/// pAAAAAtzc2gtZWQyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49g
+/// AAAECSeskxuEtJrr9L7ZkbpogXC5pKRNVHx1ueMX2h1XUnmek5zfpvwNc3MztTTpE90zLI
+/// 1Ref4AwwRVdSFyJLGbj2AAAAB3Rlc3RrZXkBAgMEBQY=
+/// -----END OPENSSH PRIVATE KEY-----
+/// ```
+const ED25519_PRIVKEY_BYTES: &[u8; 32] = &[
     0x92, 0x7a, 0xc9, 0x31, 0xb8, 0x4b, 0x49, 0xae, 0xbf, 0x4b, 0xed, 0x99, 0x1b, 0xa6, 0x88, 0x17,
     0x0b, 0x9a, 0x4a, 0x44, 0xd5, 0x47, 0xc7, 0x5b, 0x9e, 0x31, 0x7d, 0xa1, 0xd5, 0x75, 0x27, 0x99,
+];
+
+const ECDSA_P256_PRIVKEY_BYTES: &[u8; 32] = &[
+    0x89, 0xdd, 0x0c, 0x96, 0x22, 0x85, 0x10, 0xec, 0x3c, 0xa4, 0xa1, 0xb8, 0xac, 0x2a, 0x77, 0xa8,
+    0xd4, 0x4d, 0xcb, 0x9d, 0x90, 0x25, 0xc6, 0xd8, 0x3a, 0x02, 0x74, 0x4f, 0x9e, 0x44, 0xcd, 0xa3,
 ];
 
 #[macro_export]

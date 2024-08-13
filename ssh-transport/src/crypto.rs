@@ -1,5 +1,6 @@
 use aes_gcm::aead::AeadMutInPlace;
 use chacha20::cipher::{KeyInit, StreamCipher, StreamCipherSeek};
+use p256::ecdsa::signature::{Signer};
 use sha2::Digest;
 use subtle::ConstantTimeEq;
 
@@ -127,6 +128,43 @@ pub const ENC_AES256_GCM: EncryptionAlgorithm = EncryptionAlgorithm {
         alg.encrypt_packet(packet, packet_number)
     },
 };
+
+pub struct HostKeySigningAlgorithm {
+    name: &'static str,
+    hostkey_private: Vec<u8>,
+    public_key: fn(private_key: &[u8]) -> Vec<u8>,
+    sign: fn(private_key: &[u8], data: &[u8]) -> Vec<u8>,
+}
+
+impl AlgorithmName for HostKeySigningAlgorithm {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+impl HostKeySigningAlgorithm {
+    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
+        (self.sign)(&self.hostkey_private, data)
+    }
+    pub fn public_key(&self) -> Vec<u8> {
+        (self.public_key)(&self.hostkey_private)
+    }
+}
+
+pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
+    HostKeySigningAlgorithm {
+        name: "ssh-ed25519",
+        hostkey_private,
+        public_key: |key| {
+            let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
+            key.verifying_key().as_bytes().to_vec()
+        },
+        sign: |key, data| {
+            let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
+            key.sign(data).to_vec()
+        },
+    }
+}
 
 pub struct AlgorithmNegotiation<T> {
     pub supported: Vec<T>,
