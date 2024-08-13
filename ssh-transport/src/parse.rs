@@ -104,8 +104,18 @@ impl Writer {
         self.string(list.0.as_bytes());
     }
 
-    pub fn mpint(&mut self, _mpint: MpInt<'_>) {
-        todo!("implement correctly?")
+    pub fn mpint<const LIMBS: usize>(&mut self, uint: crypto_bigint::Uint<LIMBS>)
+    where
+        crypto_bigint::Uint<LIMBS>: crypto_bigint::ArrayEncoding,
+    {
+        let bytes = crypto_bigint::ArrayEncoding::to_be_byte_array(&uint);
+        let (bytes, pad_zero) = fixup_mpint(&bytes);
+        let len = bytes.len() + (pad_zero as usize);
+        self.u32(len as u32);
+        if pad_zero {
+            self.u8(0);
+        }
+        self.write(bytes);
     }
 
     pub fn string(&mut self, data: &[u8]) {
@@ -120,6 +130,16 @@ impl Writer {
     pub fn finish(self) -> Vec<u8> {
         self.0
     }
+}
+
+/// Returns an array of significant bits for the mpint,
+/// and whether a leading 0 needs to be added for padding.
+pub fn fixup_mpint(mut int_encoded: &[u8]) -> (&[u8], bool) {
+    while int_encoded[0] == 0 {
+        int_encoded = &int_encoded[1..];
+    }
+    // If the first high bit is set, pad it with a zero.
+    (int_encoded, (int_encoded[0] & 0b10000000) > 1)
 }
 
 #[derive(Clone, Copy)]

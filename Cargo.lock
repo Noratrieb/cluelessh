@@ -928,6 +928,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "chacha20",
+ "crypto-bigint",
  "ed25519-dalek",
  "eyre",
  "hex-literal",

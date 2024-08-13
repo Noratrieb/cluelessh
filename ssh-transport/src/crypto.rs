@@ -7,7 +7,7 @@ use subtle::ConstantTimeEq;
 use crate::{
     client_error,
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
-    parse::Writer,
+    parse::{self, Writer},
     Msg, Result, SshRng,
 };
 
@@ -187,17 +187,30 @@ pub fn hostkey_ecdsa_sha2_p256(hostkey_private: Vec<u8>) -> HostKeySigningAlgori
         hostkey_private,
         public_key: |key| {
             let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();
-            key.verifying_key()
-                .to_encoded_point(true)
-                .as_bytes()
-                .to_vec();
-            todo!()
+            let public_key = key.verifying_key();
+            let mut data = Writer::new();
+
+            // <https://datatracker.ietf.org/doc/html/rfc5656#section-3.1>
+            data.string(b"ecdsa-sha2-nistp256");
+            data.string(b"nistp256");
+            // > point compression MAY be used.
+            // But OpenSSH does not appear to support that, so let's NOT use it.
+            data.string(public_key.to_encoded_point(false).as_bytes());
+            EncodedSshPublicHostKey(data.finish())
         },
         sign: |key, data| {
             let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();
             let signature: p256::ecdsa::Signature = key.sign(data);
-            signature.to_vec();
-            todo!()
+            let (r, s) = signature.split_scalars();
+
+            // <https://datatracker.ietf.org/doc/html/rfc5656#section-3.1.2>
+            let mut data = Writer::new();
+            data.string(b"ecdsa-sha2-nistp256");
+            let mut signature_blob = Writer::new();
+            signature_blob.mpint(p256::U256::from(r.as_ref()));
+            signature_blob.mpint(p256::U256::from(s.as_ref()));
+            data.string(&signature_blob.finish());
+            EncodedSshSignature(data.finish())
         },
     }
 }
@@ -404,12 +417,8 @@ fn derive_key(
     output
 }
 
-pub(crate) fn encode_mpint_for_hash(mut key: &[u8], mut add_to_hash: impl FnMut(&[u8])) {
-    while key[0] == 0 {
-        key = &key[1..];
-    }
-    // If the first high bit is set, pad it with a zero.
-    let pad_zero = (key[0] & 0b10000000) > 1;
+pub(crate) fn encode_mpint_for_hash(key: &[u8], mut add_to_hash: impl FnMut(&[u8])) {
+    let (key, pad_zero) = parse::fixup_mpint(key);
     add_to_hash(&u32::to_be_bytes((key.len() + (pad_zero as usize)) as u32));
     if pad_zero {
         add_to_hash(&[0]);

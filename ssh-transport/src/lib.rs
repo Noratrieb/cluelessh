@@ -7,10 +7,7 @@ use core::str;
 use std::{collections::VecDeque, mem::take};
 
 use crypto::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm, HostKeySigningAlgorithm};
-use packet::{
-    KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, SshPublicKey,
-    SshSignature,
-};
+use packet::{KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport};
 use parse::{NameList, Parser, Writer};
 use rand::RngCore;
 use sha2::Digest;
@@ -199,7 +196,7 @@ impl ServerConnection {
 
                     let hostkey_algorithms = AlgorithmNegotiation {
                         supported: vec![
-                            //crypto::hostkey_ed25519(ED25519_PRIVKEY_BYTES.to_vec()),
+                            crypto::hostkey_ed25519(ED25519_PRIVKEY_BYTES.to_vec()),
                             crypto::hostkey_ecdsa_sha2_p256(ECDSA_P256_PRIVKEY_BYTES.to_vec()),
                         ],
                     };

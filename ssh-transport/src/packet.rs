@@ -318,69 +318,6 @@ impl<'a> KeyExchangeEcDhInitPacket<'a> {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct SshPublicKey<'a> {
-    pub(crate) format: &'a [u8],
-    pub(crate) data: &'a [u8],
-}
-impl SshPublicKey<'_> {
-    pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        let mut data = Writer::new();
-        // ed25519-specific!
-        // <https://datatracker.ietf.org/doc/html/rfc8709#section-4>
-        data.string(self.format);
-        data.string(self.data);
-        data.finish()
-    }
-}
-#[derive(Debug)]
-pub(crate) struct SshPublicKeyEcdsa<'a> {
-    pub(crate) format: &'a [u8],
-    pub(crate) ident: &'a [u8],
-    pub(crate) data: &'a [u8],
-}
-impl SshPublicKeyEcdsa<'_> {
-    pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        let mut data = Writer::new();
-        // ECDSA-specific!
-        // <https://datatracker.ietf.org/doc/html/rfc5656#section-3.1>
-        data.string(self.format);
-        data.string(self.ident);
-        data.string(self.data);
-        data.finish()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct SshSignature<'a> {
-    pub(crate) format: &'a [u8],
-    pub(crate) data: &'a [u8],
-}
-
-impl SshSignature<'_> {
-    pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        let mut data = Writer::new();
-        // <https://datatracker.ietf.org/doc/html/rfc8709#section-6>
-        data.string(self.format);
-        data.string(self.data);
-        data.finish()
-    }
-}
-
-pub(crate) struct SshSignatureEcdsa<'a> {
-    pub(crate) format: &'a [u8],
-    pub(crate) data: &'a [u8],
-}
-
-impl SshSignatureEcdsa<'_> {
-    pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        let mut data = Writer::new();
-        // <https://datatracker.ietf.org/doc/html/rfc5656#section-3.1.2>
-        data.string(self.format);
-        data.finish()
-    }
-}
-
 pub(crate) struct RawPacket {
     pub mac_len: usize,
     pub raw: Vec<u8>,
