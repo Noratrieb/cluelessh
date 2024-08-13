@@ -111,12 +111,14 @@ pub mod auth {
             let service_name = auth_req.utf8_string()?;
             let method_name = auth_req.utf8_string()?;
 
-            info!(
-                %username,
-                %service_name,
-                %method_name,
-                "User trying to authenticate"
-            );
+            if method_name != "none" {
+                info!(
+                    %username,
+                    %service_name,
+                    %method_name,
+                    "User trying to authenticate"
+                );
+            }
 
             if service_name != "ssh-connection" {
                 return Err(client_error!(

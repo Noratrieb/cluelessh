@@ -170,7 +170,11 @@ async fn handle_connection(
                     // arbitrary limit
                     if total_sent_data.len() < 500_000 {
                         total_sent_data.extend_from_slice(&data);
-                    }
+                    } else {
+                        info!(channel = %update.number, "Reached stdin limit");
+                        state.do_operation(update.number.construct_op(ChannelOperationKind::Data(b"Thanks Hayley!".to_vec())));
+                        state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
+                    } 
 
                     if is_eof {
                         debug!(channel = %update.number, "Received EOF, closing channel");

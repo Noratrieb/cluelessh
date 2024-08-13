@@ -299,7 +299,7 @@ impl ServerChannelsState {
                 })
             }
             _ => {
-                todo!("{packet_type}");
+                todo!("unsupported packet: {} ({packet_type})", numbers::packet_type_to_string(packet_type).unwrap_or("<unknown>"));
             }
         }
 

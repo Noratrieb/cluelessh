@@ -162,7 +162,7 @@ impl ServerConnection {
 
                     info!(%reason, %reason_string, %description, "Client disconnecting");
 
-                    return Ok(());
+                    return Err(SshStatus::Disconnect);
                 }
                 _ => {}
             }
