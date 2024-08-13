@@ -7,7 +7,6 @@ use core::str;
 use std::{collections::VecDeque, mem::take};
 
 use crypto::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm, HostKeySigningAlgorithm};
-use ed25519_dalek::ed25519::signature::Signer;
 use packet::{
     KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, SshPublicKey,
     SshSignature,
@@ -198,13 +197,15 @@ impl ServerConnection {
                     let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
-                    // TODO: support ecdsa-sha2-nistp256
                     let hostkey_algorithms = AlgorithmNegotiation {
-                        supported: vec![crypto::hostkey_ed25519(ED25519_PRIVKEY_BYTES.to_vec())],
+                        supported: vec![
+                            //crypto::hostkey_ed25519(ED25519_PRIVKEY_BYTES.to_vec()),
+                            crypto::hostkey_ecdsa_sha2_p256(ECDSA_P256_PRIVKEY_BYTES.to_vec()),
+                        ],
                     };
-
                     let server_host_key_algorithm =
                         hostkey_algorithms.find(kex.server_host_key_algorithms.0)?;
+                    debug!(name = %server_host_key_algorithm.name(), "Using host key algorithm");
 
                     let encryption_algorithms_client_to_server = AlgorithmNegotiation {
                         supported: vec![crypto::ENC_CHACHA20POLY1305, crypto::ENC_AES256_GCM],
@@ -299,7 +300,7 @@ impl ServerConnection {
                         shared_secret,
                     } = (kex_algorithm.exchange)(client_public_key, &mut *self.rng)?;
 
-                    /*let hostkey =
+                    let hostkey =
                         p256::ecdsa::SigningKey::random(&mut SshRngRandAdapter(&mut *self.rng));
 
                     eprintln!(
@@ -310,12 +311,9 @@ impl ServerConnection {
                             .map(|b| format!("0x{b:x}"))
                             .collect::<Vec<_>>()
                             .join(", ")
-                    );*/
+                    );
 
-                    let pub_hostkey = SshPublicKey {
-                        format: server_host_key_algorithm.name().as_bytes(),
-                        data: &server_host_key_algorithm.public_key(),
-                    };
+                    let pub_hostkey = server_host_key_algorithm.public_key();
 
                     let mut hash = sha2::Sha256::new();
                     let add_hash = |hash: &mut sha2::Sha256, bytes: &[u8]| {
@@ -339,7 +337,7 @@ impl ServerConnection {
                     ); // V_S
                     hash_string(&mut hash, client_kexinit); // I_C
                     hash_string(&mut hash, server_kexinit); // I_S
-                    hash_string(&mut hash, &pub_hostkey.to_bytes()); // K_S
+                    hash_string(&mut hash, &pub_hostkey.0); // K_S
 
                     // For normal DH as in RFC4253, e and f are mpints.
                     // But for ECDH as defined in RFC5656, Q_C and Q_S are strings.
@@ -358,13 +356,9 @@ impl ServerConnection {
                     // eprintln!("hash:              {:x?}", hash);
 
                     let packet = Packet::new_msg_kex_ecdh_reply(
-                        &pub_hostkey.to_bytes(),
+                        &pub_hostkey.0,
                         &server_public_key,
-                        &SshSignature {
-                            format: server_host_key_algorithm.name().as_bytes(),
-                            data: &signature,
-                        }
-                        .to_bytes(),
+                        &signature.0,
                     );
 
                     self.packet_transport.queue_packet(packet);

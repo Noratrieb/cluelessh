@@ -1,12 +1,13 @@
 use aes_gcm::aead::AeadMutInPlace;
 use chacha20::cipher::{KeyInit, StreamCipher, StreamCipherSeek};
-use p256::ecdsa::signature::{Signer};
+use p256::ecdsa::signature::Signer;
 use sha2::Digest;
 use subtle::ConstantTimeEq;
 
 use crate::{
     client_error,
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
+    parse::Writer,
     Msg, Result, SshRng,
 };
 
@@ -129,11 +130,14 @@ pub const ENC_AES256_GCM: EncryptionAlgorithm = EncryptionAlgorithm {
     },
 };
 
+pub struct EncodedSshPublicHostKey(pub Vec<u8>);
+pub struct EncodedSshSignature(pub Vec<u8>);
+
 pub struct HostKeySigningAlgorithm {
     name: &'static str,
     hostkey_private: Vec<u8>,
-    public_key: fn(private_key: &[u8]) -> Vec<u8>,
-    sign: fn(private_key: &[u8], data: &[u8]) -> Vec<u8>,
+    public_key: fn(private_key: &[u8]) -> EncodedSshPublicHostKey,
+    sign: fn(private_key: &[u8], data: &[u8]) -> EncodedSshSignature,
 }
 
 impl AlgorithmName for HostKeySigningAlgorithm {
@@ -143,10 +147,10 @@ impl AlgorithmName for HostKeySigningAlgorithm {
 }
 
 impl HostKeySigningAlgorithm {
-    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
+    pub fn sign(&self, data: &[u8]) -> EncodedSshSignature {
         (self.sign)(&self.hostkey_private, data)
     }
-    pub fn public_key(&self) -> Vec<u8> {
+    pub fn public_key(&self) -> EncodedSshPublicHostKey {
         (self.public_key)(&self.hostkey_private)
     }
 }
@@ -157,11 +161,43 @@ pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
         hostkey_private,
         public_key: |key| {
             let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
-            key.verifying_key().as_bytes().to_vec()
+            let public_key = key.verifying_key();
+
+            // <https://datatracker.ietf.org/doc/html/rfc8709#section-4>
+            let mut data = Writer::new();
+            data.string(b"ssh-ed25519");
+            data.string(public_key.as_bytes());
+            EncodedSshPublicHostKey(data.finish())
         },
         sign: |key, data| {
             let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
-            key.sign(data).to_vec()
+            let signature = key.sign(data);
+
+            // <https://datatracker.ietf.org/doc/html/rfc8709#section-6>
+            let mut data = Writer::new();
+            data.string(b"ssh-ed25519");
+            data.string(&signature.to_bytes());
+            EncodedSshSignature(data.finish())
+        },
+    }
+}
+pub fn hostkey_ecdsa_sha2_p256(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
+    HostKeySigningAlgorithm {
+        name: "ecdsa-sha2-nistp256",
+        hostkey_private,
+        public_key: |key| {
+            let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();
+            key.verifying_key()
+                .to_encoded_point(true)
+                .as_bytes()
+                .to_vec();
+            todo!()
+        },
+        sign: |key, data| {
+            let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();
+            let signature: p256::ecdsa::Signature = key.sign(data);
+            signature.to_vec();
+            todo!()
         },
     }
 }
