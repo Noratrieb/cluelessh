@@ -4,7 +4,7 @@ use tracing::{debug, info, trace};
 
 use crate::{
     crypto::{
-        self, AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm, HostKeySigningAlgorithm,
+        self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeySigningAlgorithm,
         KeyExchangeSecret, SupportedAlgorithms,
     },
     numbers,
@@ -29,6 +29,7 @@ enum ClientState {
     KexInit {
         client_ident: Vec<u8>,
         server_ident: Vec<u8>,
+        client_kexinit: Vec<u8>,
     },
     DhKeyInit {
         client_ident: Vec<u8>,
@@ -37,7 +38,17 @@ enum ClientState {
         server_hostkey_algorithm: HostKeySigningAlgorithm,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
+        client_kexinit: Vec<u8>,
+        server_kexinit: Vec<u8>,
     },
+    NewKeys {
+        h: [u8; 32],
+        k: Vec<u8>,
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
+    },
+    ServiceRequest,
+    Open,
 }
 
 impl ClientConnection {
@@ -107,6 +118,7 @@ impl ClientConnection {
                 ClientState::KexInit {
                     client_ident,
                     server_ident,
+                    client_kexinit,
                 } => {
                     let mut kexinit = packet.payload_parser();
                     let packet_type = kexinit.u8()?;
@@ -119,7 +131,7 @@ impl ClientConnection {
 
                     let sup_algs = SupportedAlgorithms::secure();
 
-                    let cookie = kexinit.array::<16>()?;
+                    let _cookie = kexinit.array::<16>()?;
 
                     let kex_algorithm = kexinit.name_list()?;
                     let kex_algorithm = sup_algs.key_exchange.find(kex_algorithm.0)?;
@@ -179,6 +191,8 @@ impl ClientConnection {
                         server_hostkey_algorithm,
                         encryption_client_to_server,
                         encryption_server_to_client,
+                        client_kexinit: mem::take(client_kexinit),
+                        server_kexinit: packet.payload,
                     };
                 }
                 ClientState::DhKeyInit {
@@ -188,6 +202,8 @@ impl ClientConnection {
                     server_hostkey_algorithm,
                     encryption_client_to_server,
                     encryption_server_to_client,
+                    client_kexinit,
+                    server_kexinit,
                 } => {
                     let mut dh = packet.payload_parser();
 
@@ -199,12 +215,85 @@ impl ClientConnection {
                         ));
                     }
 
-                    let sever_host_key = dh.string()?;
+                    let server_hostkey = dh.string()?;
                     let server_ephermal_key = dh.string()?;
                     let signature = dh.string()?;
 
-                    let shared_secret =
-                        (mem::take(kex_secret).unwrap().exchange)(server_ephermal_key)?;
+                    let kex_secret = mem::take(kex_secret).unwrap();
+                    let shared_secret = (kex_secret.exchange)(server_ephermal_key)?;
+
+                    let hash = crypto::key_exchange_hash(
+                        client_ident,
+                        server_ident,
+                        client_kexinit,
+                        server_kexinit,
+                        server_hostkey,
+                        &kex_secret.pubkey,
+                        server_ephermal_key,
+                        &shared_secret,
+                    );
+
+                    (server_hostkey_algorithm.verify)(
+                        server_hostkey,
+                        &hash,
+                        &EncodedSshSignature(signature.to_vec()),
+                    )?;
+
+                    // eprintln!("client_public_key: {:x?}", kex_secret.pubkey);
+                    // eprintln!("server_public_key: {:x?}", server_ephermal_key);
+                    // eprintln!("shared_secret:     {:x?}", shared_secret);
+                    // eprintln!("hash:              {:x?}", hash);
+
+                    self.packet_transport.queue_packet(Packet {
+                        payload: vec![numbers::SSH_MSG_NEWKEYS],
+                    });
+                    self.state = ClientState::NewKeys {
+                        h: hash,
+                        k: shared_secret,
+                        encryption_client_to_server: *encryption_client_to_server,
+                        encryption_server_to_client: *encryption_server_to_client,
+                    };
+                }
+                ClientState::NewKeys {
+                    h,
+                    k,
+                    encryption_client_to_server,
+                    encryption_server_to_client,
+                } => {
+                    if packet.payload != [numbers::SSH_MSG_NEWKEYS] {
+                        return Err(peer_error!("did not send SSH_MSG_NEWKEYS"));
+                    }
+
+                    self.packet_transport.set_key(
+                        *h,
+                        k,
+                        *encryption_client_to_server,
+                        *encryption_server_to_client,
+                        false,
+                    );
+
+                    debug!("Requestin ssh-userauth service");
+                    self.packet_transport
+                        .queue_packet(Packet::new_msg_service_request(b"ssh-userauth"));
+
+                    self.state = ClientState::ServiceRequest;
+                }
+                ClientState::ServiceRequest => {
+                    let mut accept = packet.payload_parser();
+                    let packet_type = accept.u8()?;
+                    if packet_type != numbers::SSH_MSG_SERVICE_ACCEPT {
+                        return Err(peer_error!("did not accept service"));
+                    }
+                    let service = accept.utf8_string()?;
+                    if service != "ssh-userauth" {
+                        return Err(peer_error!("server accepted the wrong service: {service}"));
+                    }
+
+                    debug!("Connection has been opened successfully");
+                    self.state = ClientState::Open;
+                }
+                ClientState::Open => {
+                    self.plaintext_packets.push_back(packet);
                 }
             }
         }
@@ -240,11 +329,13 @@ impl ClientConnection {
         kexinit.u32(0); // reserved
         let kexinit = kexinit.finish();
 
-        self.packet_transport
-            .queue_packet(Packet { payload: kexinit });
+        self.packet_transport.queue_packet(Packet {
+            payload: kexinit.clone(),
+        });
         self.state = ClientState::KexInit {
             client_ident,
             server_ident,
+            client_kexinit: kexinit,
         };
     }
 }

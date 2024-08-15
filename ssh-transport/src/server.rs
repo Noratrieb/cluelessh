@@ -9,7 +9,6 @@ use crate::packet::{
 use crate::parse::{NameList, Parser, Writer};
 use crate::{numbers, Result};
 use crate::{peer_error, Msg, SshRng, SshStatus};
-use sha2::Digest;
 use tracing::{debug, info, trace};
 
 // This is definitely who we are.
@@ -215,47 +214,24 @@ impl ServerConnection {
                     let server_secret = (kex_algorithm.generate_secret)(&mut *self.rng);
                     let server_public_key = server_secret.pubkey;
                     let shared_secret = (server_secret.exchange)(client_public_key)?;
-
                     let pub_hostkey = server_host_key_algorithm.public_key();
 
-                    let mut hash = sha2::Sha256::new();
-                    let add_hash = |hash: &mut sha2::Sha256, bytes: &[u8]| {
-                        hash.update(bytes);
-                    };
-                    let hash_string = |hash: &mut sha2::Sha256, bytes: &[u8]| {
-                        add_hash(hash, &u32::to_be_bytes(bytes.len() as u32));
-                        add_hash(hash, bytes);
-                    };
-                    let hash_mpint = |hash: &mut sha2::Sha256, bytes: &[u8]| {
-                        crypto::encode_mpint_for_hash(bytes, |data| add_hash(hash, data));
-                    };
-
-                    hash_string(
-                        &mut hash,
-                        &client_identification[..(client_identification.len() - 2)],
-                    ); // V_C
-                    hash_string(
-                        &mut hash,
-                        &SERVER_IDENTIFICATION[..(SERVER_IDENTIFICATION.len() - 2)],
-                    ); // V_S
-                    hash_string(&mut hash, client_kexinit); // I_C
-                    hash_string(&mut hash, server_kexinit); // I_S
-                    hash_string(&mut hash, &pub_hostkey.0); // K_S
-
-                    // For normal DH as in RFC4253, e and f are mpints.
-                    // But for ECDH as defined in RFC5656, Q_C and Q_S are strings.
-                    // <https://datatracker.ietf.org/doc/html/rfc5656#section-4>
-                    hash_string(&mut hash, client_public_key); // Q_C
-                    hash_string(&mut hash, &server_public_key); // Q_S
-                    hash_mpint(&mut hash, &shared_secret); // K
-
-                    let hash = hash.finalize();
+                    let hash = crypto::key_exchange_hash(
+                        &client_identification,
+                        SERVER_IDENTIFICATION,
+                        client_kexinit,
+                        server_kexinit,
+                        &pub_hostkey.0,
+                        client_public_key,
+                        &server_public_key,
+                        &shared_secret,
+                    );
 
                     let signature = server_host_key_algorithm.sign(&hash);
 
-                    // eprintln!("client_public_key: {:x?}", client_public_key.0);
-                    // eprintln!("server_public_key: {:x?}", server_public_key.as_bytes());
-                    // eprintln!("shared_secret:     {:x?}", shared_secret.as_bytes());
+                    // eprintln!("client_public_key: {:x?}", client_public_key);
+                    // eprintln!("server_public_key: {:x?}", server_public_key);
+                    // eprintln!("shared_secret:     {:x?}", shared_secret);
                     // eprintln!("hash:              {:x?}", hash);
 
                     let packet = Packet::new_msg_kex_ecdh_reply(
@@ -266,7 +242,7 @@ impl ServerConnection {
 
                     self.packet_transport.queue_packet(packet);
                     self.state = ServerState::NewKeys {
-                        h: hash.into(),
+                        h: hash,
                         k: shared_secret,
                         encryption_client_to_server: *encryption_client_to_server,
                         encryption_server_to_client: *encryption_server_to_client,
@@ -285,11 +261,13 @@ impl ServerConnection {
                     self.packet_transport.queue_packet(Packet {
                         payload: vec![numbers::SSH_MSG_NEWKEYS],
                     });
+
                     self.packet_transport.set_key(
                         *h,
                         k,
                         *encryption_client_to_server,
                         *encryption_server_to_client,
+                        true,
                     );
                     self.state = ServerState::ServiceRequest {};
                 }

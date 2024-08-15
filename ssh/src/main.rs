@@ -6,7 +6,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
-use tracing::{info, trace};
+use tracing::info;
 
 use ssh_protocol::{
     transport::{self},
@@ -46,7 +46,6 @@ async fn main() -> eyre::Result<()> {
 
     loop {
         while let Some(msg) = state.next_msg_to_send() {
-            trace!("Writing packet {msg:?}");
             conn.write_all(&msg.to_bytes())
                 .await
                 .wrap_err("writing response")?;
@@ -63,12 +62,9 @@ async fn main() -> eyre::Result<()> {
 
         if let Err(err) = state.recv_bytes(&buf[..read]) {
             match err {
-                SshStatus::ClientError(err) => {
+                SshStatus::PeerError(err) => {
                     info!(?err, "disconnecting client after invalid operation");
                     return Ok(());
-                }
-                SshStatus::ServerError(err) => {
-                    return Err(err);
                 }
                 SshStatus::Disconnect => {
                     info!("Received disconnect from client");

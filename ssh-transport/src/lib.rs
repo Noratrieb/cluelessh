@@ -12,23 +12,14 @@ pub enum SshStatus {
     /// The client has sent a disconnect request, close the connection.
     /// This is not an error.
     Disconnect,
-    /// The client did something wrong.
+    /// The peer did something wrong.
     /// The connection should be closed and a notice may be logged,
     /// but this does not require operator intervention.
-    ClientError(String),
-    /// Something went wrong on the server.
-    /// The connection should be closed and an error should be logged.
-    // TODO: does this ever happen?
-    ServerError(eyre::Report),
+    PeerError(String),
 }
 
 pub type Result<T, E = SshStatus> = std::result::Result<T, E>;
 
-impl From<eyre::Report> for SshStatus {
-    fn from(value: eyre::Report) -> Self {
-        Self::ServerError(value)
-    }
-}
 
 pub trait SshRng {
     fn fill_bytes(&mut self, dest: &mut [u8]);
@@ -57,6 +48,6 @@ impl rand_core::RngCore for SshRngRandAdapter<'_> {
 #[macro_export]
 macro_rules! peer_error {
     ($($tt:tt)*) => {
-        $crate::SshStatus::ClientError(::std::format!($($tt)*))
+        $crate::SshStatus::PeerError(::std::format!($($tt)*))
     };
 }

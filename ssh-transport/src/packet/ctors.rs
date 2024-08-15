@@ -49,6 +49,7 @@ ctors! {
     // Transport layer protocol:
 
     // 1 to 19 Transport layer generic (e.g., disconnect, ignore, debug, etc.)
+    fn new_msg_service_request(SSH_MSG_SERVICE_REQUEST; service_name: string);
     // 20 to 29 Algorithm negotiation
     // 30 to 49 Key exchange method specific (numbers can be reused for different authentication methods)
     fn new_msg_kex_ecdh_init(SSH_MSG_KEX_ECDH_INIT; client_ephemeral_public_key_qc: string);

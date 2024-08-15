@@ -118,12 +118,9 @@ async fn handle_connection(
 
         if let Err(err) = state.recv_bytes(&buf[..read]) {
             match err {
-                SshStatus::ClientError(err) => {
+                SshStatus::PeerError(err) => {
                     info!(?err, "disconnecting client after invalid operation");
                     return Ok(());
-                }
-                SshStatus::ServerError(err) => {
-                    return Err(err);
                 }
                 SshStatus::Disconnect => {
                     info!("Received disconnect from client");

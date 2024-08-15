@@ -1064,7 +1064,6 @@ dependencies = [
  "crypto-bigint",
  "ctr",
  "ed25519-dalek",
- "eyre",
  "hex-literal",
  "p256",
  "poly1305",

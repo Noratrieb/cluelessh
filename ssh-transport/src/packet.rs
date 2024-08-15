@@ -8,7 +8,7 @@ use tracing::{debug, trace};
 use crate::crypto::{EncryptionAlgorithm, Keys, Plaintext, Session};
 use crate::parse::{NameList, Parser, Writer};
 use crate::Result;
-use crate::{peer_error, numbers};
+use crate::{numbers, peer_error};
 
 /// Frames the byte stream into packets.
 pub(crate) struct PacketTransport {
@@ -114,18 +114,21 @@ impl PacketTransport {
         k: &[u8],
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
+        is_server: bool,
     ) {
         if let Err(()) = self.keys.rekey(
             h,
             k,
             encryption_client_to_server,
             encryption_server_to_client,
+            is_server,
         ) {
             self.keys = Box::new(Session::new(
                 h,
                 k,
                 encryption_client_to_server,
                 encryption_server_to_client,
+                is_server,
             ));
         }
     }
@@ -251,9 +254,7 @@ impl<'a> KeyExchangeInitPacket<'a> {
 
         let kind = c.u8()?;
         if kind != numbers::SSH_MSG_KEXINIT {
-            return Err(peer_error!(
-                "expected SSH_MSG_KEXINIT packet, found {kind}"
-            ));
+            return Err(peer_error!("expected SSH_MSG_KEXINIT packet, found {kind}"));
         }
         let cookie = c.array::<16>()?;
         let kex_algorithms = c.name_list()?;
@@ -418,9 +419,7 @@ impl PacketParser {
         // 'padding_length', 'payload', 'random padding', and 'mac').
         // Implementations SHOULD support longer packets, where they might be needed.
         if packet_length > 500_000 {
-            return Err(peer_error!(
-                "packet too large (>500_000): {packet_length}"
-            ));
+            return Err(peer_error!("packet too large (>500_000): {packet_length}"));
         }
 
         let remaining_len = std::cmp::min(bytes.len(), packet_length - (self.raw_data.len() - 4));

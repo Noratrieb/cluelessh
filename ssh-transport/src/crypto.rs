@@ -5,7 +5,7 @@ use sha2::Digest;
 
 use crate::{
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
-    parse::{self, Writer},
+    parse::{self, Parser, Writer},
     peer_error, Msg, Result, SshRng,
 };
 
@@ -112,6 +112,8 @@ pub struct HostKeySigningAlgorithm {
     hostkey_private: Vec<u8>,
     public_key: fn(private_key: &[u8]) -> EncodedSshPublicHostKey,
     sign: fn(private_key: &[u8], data: &[u8]) -> EncodedSshSignature,
+    pub verify:
+        fn(public_key: &[u8], message: &[u8], signature: &EncodedSshSignature) -> Result<()>,
 }
 
 impl AlgorithmName for HostKeySigningAlgorithm {
@@ -153,6 +155,37 @@ pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
             data.string(&signature.to_bytes());
             EncodedSshSignature(data.finish())
         },
+        verify: |public_key, message, signature| {
+            // Parse out public key
+            let mut public_key = Parser::new(public_key);
+            let public_key_alg = public_key.string()?;
+            if public_key_alg != b"ssh-ed25519" {
+                return Err(peer_error!("incorrect algorithm public host key"));
+            }
+            let public_key = public_key.string()?;
+            let Ok(public_key) = public_key.try_into() else {
+                return Err(peer_error!("incorrect length for public host key"));
+            };
+            let public_key = ed25519_dalek::VerifyingKey::from_bytes(public_key)
+                .map_err(|err| peer_error!("incorrect public host key: {err}"))?;
+
+            // Parse out signature
+            let mut signature = Parser::new(&signature.0);
+            let alg = signature.string()?;
+            if alg != b"ssh-ed25519" {
+                return Err(peer_error!("incorrect algorithm for signature"));
+            }
+            let signature = signature.string()?;
+            let Ok(signature) = signature.try_into() else {
+                return Err(peer_error!("incorrect length for signature"));
+            };
+            let signature = ed25519_dalek::Signature::from_bytes(signature);
+
+            // Verify
+            public_key
+                .verify_strict(message, &signature)
+                .map_err(|err| peer_error!("incorrect signature: {err}"))
+        },
     }
 }
 pub fn hostkey_ecdsa_sha2_p256(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
@@ -186,6 +219,7 @@ pub fn hostkey_ecdsa_sha2_p256(hostkey_private: Vec<u8>) -> HostKeySigningAlgori
             data.string(&signature_blob.finish());
             EncodedSshSignature(data.finish())
         },
+        verify: |_public_key, _message, _signature| todo!("ecdsa p256 verification"),
     }
 }
 
@@ -259,8 +293,8 @@ impl SupportedAlgorithms {
 
 pub(crate) struct Session {
     session_id: [u8; 32],
-    client_to_server: Tunnel,
-    server_to_client: Tunnel,
+    from_peer: Tunnel,
+    to_peer: Tunnel,
 }
 
 struct Tunnel {
@@ -282,6 +316,7 @@ pub(crate) trait Keys: Send + Sync + 'static {
         k: &[u8],
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
+        is_server: bool,
     ) -> Result<(), ()>;
 }
 
@@ -303,6 +338,7 @@ impl Keys for Plaintext {
         _: &[u8],
         _: EncryptionAlgorithm,
         _: EncryptionAlgorithm,
+        _: bool,
     ) -> Result<(), ()> {
         Err(())
     }
@@ -314,6 +350,7 @@ impl Session {
         k: &[u8],
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
+        is_server: bool,
     ) -> Self {
         Self::from_keys(
             h,
@@ -321,6 +358,7 @@ impl Session {
             k,
             encryption_client_to_server,
             encryption_server_to_client,
+            is_server,
         )
     }
 
@@ -331,26 +369,32 @@ impl Session {
         k: &[u8],
         alg_c2s: EncryptionAlgorithm,
         alg_s2c: EncryptionAlgorithm,
+        is_server: bool,
     ) -> Self {
+        let c2s = Tunnel {
+            algorithm: alg_c2s,
+            state: {
+                let mut state = derive_key(k, h, "C", session_id, alg_c2s.key_size);
+                let iv = derive_key(k, h, "A", session_id, alg_c2s.iv_size);
+                state.extend_from_slice(&iv);
+                state
+            },
+        };
+        let s2c = Tunnel {
+            algorithm: alg_s2c,
+            state: {
+                let mut state = derive_key(k, h, "D", session_id, alg_s2c.key_size);
+                state.extend_from_slice(&derive_key(k, h, "B", session_id, alg_s2c.iv_size));
+                state
+            },
+        };
+
+        let (from_peer, to_peer) = if is_server { (c2s, s2c) } else { (s2c, c2s) };
+
         Self {
             session_id,
-            client_to_server: Tunnel {
-                algorithm: alg_c2s,
-                state: {
-                    let mut state = derive_key(k, h, "C", session_id, alg_c2s.key_size);
-                    let iv = derive_key(k, h, "A", session_id, alg_c2s.iv_size);
-                    state.extend_from_slice(&iv);
-                    state
-                },
-            },
-            server_to_client: Tunnel {
-                algorithm: alg_s2c,
-                state: {
-                    let mut state = derive_key(k, h, "D", session_id, alg_s2c.key_size);
-                    state.extend_from_slice(&derive_key(k, h, "B", session_id, alg_s2c.iv_size));
-                    state
-                },
-            },
+            from_peer,
+            to_peer,
             // integrity_key_client_to_server: derive("E").into(),
             // integrity_key_server_to_client: derive("F").into(),
         }
@@ -359,27 +403,16 @@ impl Session {
 
 impl Keys for Session {
     fn decrypt_len(&mut self, bytes: &mut [u8; 4], packet_number: u64) {
-        (self.client_to_server.algorithm.decrypt_len)(
-            &mut self.client_to_server.state,
-            bytes,
-            packet_number,
-        );
+        (self.from_peer.algorithm.decrypt_len)(&mut self.from_peer.state, bytes, packet_number);
     }
 
     fn decrypt_packet(&mut self, bytes: RawPacket, packet_number: u64) -> Result<Packet> {
-        (self.client_to_server.algorithm.decrypt_packet)(
-            &mut self.client_to_server.state,
-            bytes,
-            packet_number,
-        )
+        (self.from_peer.algorithm.decrypt_packet)(&mut self.from_peer.state, bytes, packet_number)
     }
 
     fn encrypt_packet_to_msg(&mut self, packet: Packet, packet_number: u64) -> Msg {
-        let packet = (self.server_to_client.algorithm.encrypt_packet)(
-            &mut self.server_to_client.state,
-            packet,
-            packet_number,
-        );
+        let packet =
+            (self.to_peer.algorithm.encrypt_packet)(&mut self.to_peer.state, packet, packet_number);
         Msg(MsgKind::EncryptedPacket(packet))
     }
 
@@ -393,6 +426,7 @@ impl Keys for Session {
         k: &[u8],
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
+        is_server: bool,
     ) -> Result<(), ()> {
         *self = Self::from_keys(
             self.session_id,
@@ -400,6 +434,7 @@ impl Keys for Session {
             k,
             encryption_client_to_server,
             encryption_server_to_client,
+            is_server,
         );
         Ok(())
     }
@@ -444,4 +479,45 @@ pub(crate) fn encode_mpint_for_hash(key: &[u8], mut add_to_hash: impl FnMut(&[u8
         add_to_hash(&[0]);
     }
     add_to_hash(key);
+}
+
+pub fn key_exchange_hash(
+    client_ident: &[u8],
+    server_ident: &[u8],
+    client_kexinit: &[u8],
+    server_kexinit: &[u8],
+    server_hostkey: &[u8],
+    eph_client_public_key: &[u8],
+    eph_server_public_key: &[u8],
+    shared_secret: &[u8],
+) -> [u8; 32] {
+    let mut hash = sha2::Sha256::new();
+    let add_hash = |hash: &mut sha2::Sha256, bytes: &[u8]| {
+        hash.update(bytes);
+    };
+    let hash_string = |hash: &mut sha2::Sha256, bytes: &[u8]| {
+        add_hash(hash, &u32::to_be_bytes(bytes.len() as u32));
+        add_hash(hash, bytes);
+    };
+    let hash_mpint = |hash: &mut sha2::Sha256, bytes: &[u8]| {
+        encode_mpint_for_hash(bytes, |data| add_hash(hash, data));
+    };
+
+    // Strip the \r\n
+    hash_string(&mut hash, &client_ident[..(client_ident.len() - 2)]); // V_C
+    hash_string(&mut hash, &server_ident[..(server_ident.len() - 2)]); // V_S
+
+    hash_string(&mut hash, client_kexinit); // I_C
+    hash_string(&mut hash, server_kexinit); // I_S
+    hash_string(&mut hash, server_hostkey); // K_S
+
+    // For normal DH as in RFC4253, e and f are mpints.
+    // But for ECDH as defined in RFC5656, Q_C and Q_S are strings.
+    // <https://datatracker.ietf.org/doc/html/rfc5656#section-4>
+    hash_string(&mut hash, eph_client_public_key); // Q_C
+    hash_string(&mut hash, eph_server_public_key); // Q_S
+    hash_mpint(&mut hash, shared_secret); // K
+
+    let hash = hash.finalize();
+    hash.into()
 }
