@@ -4,14 +4,20 @@ use p256::ecdsa::signature::Signer;
 use sha2::Digest;
 
 use crate::{
-    client_error,
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
     parse::{self, Writer},
-    Msg, Result, SshRng,
+    peer_error, Msg, Result, SshRng,
 };
 
 pub trait AlgorithmName {
     fn name(&self) -> &'static str;
+}
+
+// Dummy algorithm.
+impl AlgorithmName for &'static str {
+    fn name(&self) -> &'static str {
+        self
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -42,7 +48,7 @@ pub const KEX_CURVE_25519_SHA256: KexAlgorithm = KexAlgorithm {
         let server_public_key = x25519_dalek::PublicKey::from(&secret); // Q_S
 
         let Ok(arr) = <[u8; 32]>::try_from(client_public_key) else {
-            return Err(crate::client_error!(
+            return Err(crate::peer_error!(
                 "invalid x25519 public key length, should be 32, was: {}",
                 client_public_key.len()
             ));
@@ -65,7 +71,7 @@ pub const KEX_ECDH_SHA2_NISTP256: KexAlgorithm = KexAlgorithm {
 
         let client_public_key =
             p256::PublicKey::from_sec1_bytes(client_public_key).map_err(|_| {
-                crate::client_error!(
+                crate::peer_error!(
                     "invalid p256 public key length: {}",
                     client_public_key.len()
                 )
@@ -196,9 +202,55 @@ impl<T: AlgorithmName> AlgorithmNegotiation<T> {
             }
         }
 
-        Err(client_error!(
-            "client does not support any matching algorithm: supported: {client_supports:?}"
+        Err(peer_error!(
+            "peer does not support any matching algorithm: peer supports: {client_supports:?}"
         ))
+    }
+}
+
+pub struct SupportedAlgorithms {
+    pub key_exchange: AlgorithmNegotiation<KexAlgorithm>,
+    pub hostkey: AlgorithmNegotiation<HostKeySigningAlgorithm>,
+    pub encryption_to_peer: AlgorithmNegotiation<EncryptionAlgorithm>,
+    pub encryption_from_peer: AlgorithmNegotiation<EncryptionAlgorithm>,
+    pub mac_to_peer: AlgorithmNegotiation<&'static str>,
+    pub mac_from_peer: AlgorithmNegotiation<&'static str>,
+    pub compression_to_peer: AlgorithmNegotiation<&'static str>,
+    pub compression_from_peer: AlgorithmNegotiation<&'static str>,
+}
+
+impl SupportedAlgorithms {
+    /// A secure default using elliptic curves and AEAD.
+    pub fn secure() -> Self {
+        Self {
+            key_exchange: AlgorithmNegotiation {
+                supported: vec![KEX_CURVE_25519_SHA256, KEX_ECDH_SHA2_NISTP256],
+            },
+            hostkey: AlgorithmNegotiation {
+                supported: vec![
+                    hostkey_ed25519(crate::server::ED25519_PRIVKEY_BYTES.to_vec()),
+                    hostkey_ecdsa_sha2_p256(crate::server::ECDSA_P256_PRIVKEY_BYTES.to_vec()),
+                ],
+            },
+            encryption_to_peer: AlgorithmNegotiation {
+                supported: vec![encrypt::CHACHA20POLY1305, encrypt::AES256_GCM],
+            },
+            encryption_from_peer: AlgorithmNegotiation {
+                supported: vec![encrypt::CHACHA20POLY1305, encrypt::AES256_GCM],
+            },
+            mac_to_peer: AlgorithmNegotiation {
+                supported: vec!["hmac-sha2-256"],
+            },
+            mac_from_peer: AlgorithmNegotiation {
+                supported: vec!["hmac-sha2-256"],
+            },
+            compression_to_peer: AlgorithmNegotiation {
+                supported: vec!["none"],
+            },
+            compression_from_peer: AlgorithmNegotiation {
+                supported: vec!["none"],
+            },
+        }
     }
 }
 

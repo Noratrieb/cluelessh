@@ -54,8 +54,8 @@ pub const SSH_MSG_CHANNEL_REQUEST: u8 = 98;
 pub const SSH_MSG_CHANNEL_SUCCESS: u8 = 99;
 pub const SSH_MSG_CHANNEL_FAILURE: u8 = 100;
 
-pub fn packet_type_to_string(packet_type: u8) -> Option<&'static str> {
-    Some(match packet_type {
+pub fn packet_type_to_string(packet_type: u8) -> &'static str {
+    match packet_type {
         1 => "SSH_MSG_DISCONNECT",
         2 => "SSH_MSG_IGNORE",
         3 => "SSH_MSG_UNIMPLEMENTED",
@@ -84,8 +84,8 @@ pub fn packet_type_to_string(packet_type: u8) -> Option<&'static str> {
         98 => "SSH_MSG_CHANNEL_REQUEST",
         99 => "SSH_MSG_CHANNEL_SUCCESS",
         100 => "SSH_MSG_CHANNEL_FAILURE",
-        _ => return None,
-    })
+        _ => return "<unknown>",
+    }
 }
 
 pub const SSH_DISCONNECT_HOST_NOT_ALLOWED_TO_CONNECT: u32 = 1;

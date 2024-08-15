@@ -3,11 +3,14 @@ use std::{collections::VecDeque, mem::take};
 
 use crate::crypto::{
     self, AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm, HostKeySigningAlgorithm,
+    SupportedAlgorithms,
 };
-use crate::packet::{KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport};
+use crate::packet::{
+    KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, ProtocolIdentParser,
+};
 use crate::parse::{NameList, Parser, Writer};
-use crate::{client_error, Msg, SshRng, SshStatus};
 use crate::{numbers, Result};
+use crate::{peer_error, Msg, SshRng, SshStatus};
 use sha2::Digest;
 use tracing::{debug, info, trace};
 
@@ -24,7 +27,7 @@ pub struct ServerConnection {
 
 enum ServerState {
     ProtoExchange {
-        received: Vec<u8>,
+        ident_parser: ProtocolIdentParser,
     },
     KeyExchangeInit {
         client_identification: Vec<u8>,
@@ -52,7 +55,7 @@ impl ServerConnection {
     pub fn new(rng: impl SshRng + Send + Sync + 'static) -> Self {
         Self {
             state: ServerState::ProtoExchange {
-                received: Vec::new(),
+                ident_parser: ProtocolIdentParser::new(),
             },
             packet_transport: PacketTransport::new(),
             rng: Box::new(rng),
@@ -60,18 +63,11 @@ impl ServerConnection {
             plaintext_packets: VecDeque::new(),
         }
     }
-}
 
-impl ServerConnection {
     pub fn recv_bytes(&mut self, bytes: &[u8]) -> Result<()> {
-        if let ServerState::ProtoExchange { received } = &mut self.state {
-            received.extend_from_slice(bytes);
-            if received.windows(2).any(|win| win == b"\r\n") {
-                // TODO: care that its SSH 2.0 instead of anythin anything else
-                // The client will not send any more information than this until we respond, so discord the rest of the bytes.
-                let client_identification = received.to_owned();
-                let client_ident_string = String::from_utf8_lossy(&client_identification);
-                debug!(identification = %client_ident_string, "Client identifier");
+        if let ServerState::ProtoExchange { ident_parser } = &mut self.state {
+            ident_parser.recv_bytes(bytes);
+            if let Some(client_identification) = ident_parser.get_peer_ident() {
                 self.packet_transport
                     .queue_send_protocol_info(SERVER_IDENTIFICATION.to_vec());
                 self.state = ServerState::KeyExchangeInit {
@@ -86,8 +82,7 @@ impl ServerConnection {
 
         while let Some(packet) = self.packet_transport.recv_next_packet() {
             let packet_type = packet.payload.get(0).unwrap_or(&0xFF);
-            let packet_type_string =
-                numbers::packet_type_to_string(*packet_type).unwrap_or("<unknown>");
+            let packet_type_string = numbers::packet_type_to_string(*packet_type);
 
             trace!(%packet_type, %packet_type_string, packet_len = %packet.payload.len(), "Received packet");
 
@@ -122,69 +117,54 @@ impl ServerConnection {
                             if list.iter().any(|alg| alg == expected) {
                                 Ok(expected)
                             } else {
-                                Err(client_error!(
+                                Err(peer_error!(
                                 "client does not support algorithm {expected}. supported: {list:?}",
                             ))
                             }
                         };
 
-                    let kex_algorithms = AlgorithmNegotiation {
-                        supported: vec![
-                            crypto::KEX_CURVE_25519_SHA256,
-                            crypto::KEX_ECDH_SHA2_NISTP256,
-                        ],
-                    };
-                    let kex_algorithm = kex_algorithms.find(kex.kex_algorithms.0)?;
+                    let sup_algs = SupportedAlgorithms::secure();
+
+                    let kex_algorithm = sup_algs.key_exchange.find(kex.kex_algorithms.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
-                    let hostkey_algorithms = AlgorithmNegotiation {
-                        supported: vec![
-                            crypto::hostkey_ed25519(ED25519_PRIVKEY_BYTES.to_vec()),
-                            crypto::hostkey_ecdsa_sha2_p256(ECDSA_P256_PRIVKEY_BYTES.to_vec()),
-                        ],
-                    };
                     let server_host_key_algorithm =
-                        hostkey_algorithms.find(kex.server_host_key_algorithms.0)?;
+                        sup_algs.hostkey.find(kex.server_host_key_algorithms.0)?;
                     debug!(name = %server_host_key_algorithm.name(), "Using host key algorithm");
 
                     // TODO: Implement aes128-ctr
                     let _ = crypto::encrypt::ENC_AES128_CTR;
 
-                    let encryption_algorithms_client_to_server = AlgorithmNegotiation {
-                        supported: vec![
-                            crypto::encrypt::CHACHA20POLY1305,
-                            crypto::encrypt::AES256_GCM,
-                        ],
-                    };
-                    let encryption_algorithms_server_to_client = AlgorithmNegotiation {
-                        supported: vec![
-                            crypto::encrypt::CHACHA20POLY1305,
-                            crypto::encrypt::AES256_GCM,
-                        ],
-                    };
-
-                    let encryption_client_to_server = encryption_algorithms_client_to_server
+                    let encryption_client_to_server = sup_algs
+                        .encryption_from_peer
                         .find(kex.encryption_algorithms_client_to_server.0)?;
                     debug!(name = %encryption_client_to_server.name(), "Using encryption algorithm C->S");
 
-                    let encryption_server_to_client = encryption_algorithms_server_to_client
+                    let encryption_server_to_client = sup_algs
+                        .encryption_to_peer
                         .find(kex.encryption_algorithms_server_to_client.0)?;
                     debug!(name = %encryption_server_to_client.name(), "Using encryption algorithm S->C");
 
-                    let mac_algorithm_client_to_server =
-                        require_algorithm("hmac-sha2-256", kex.mac_algorithms_client_to_server)?;
-                    let mac_algorithm_server_to_client =
-                        require_algorithm("hmac-sha2-256", kex.mac_algorithms_server_to_client)?;
-                    let compression_algorithm_client_to_server =
-                        require_algorithm("none", kex.compression_algorithms_client_to_server)?;
-                    let compression_algorithm_server_to_client =
-                        require_algorithm("none", kex.compression_algorithms_server_to_client)?;
+                    let mac_algorithm_client_to_server = sup_algs
+                        .mac_from_peer
+                        .find(kex.mac_algorithms_client_to_server.0)?;
+                    let mac_algorithm_server_to_client = sup_algs
+                        .mac_to_peer
+                        .find(kex.mac_algorithms_server_to_client.0)?;
+                    debug!("x");
 
+                    let compression_algorithm_client_to_server = sup_algs
+                        .compression_from_peer
+                        .find(kex.compression_algorithms_client_to_server.0)?;
+                    let compression_algorithm_server_to_client = sup_algs
+                        .compression_to_peer
+                        .find(kex.compression_algorithms_server_to_client.0)?;
+                    debug!("x");
                     let _ = kex.languages_client_to_server;
                     let _ = kex.languages_server_to_client;
 
                     if kex.first_kex_packet_follows {
-                        return Err(client_error!(
+                        return Err(peer_error!(
                             "the client wants to send a guessed packet, that's annoying :("
                         ));
                     }
@@ -314,7 +294,7 @@ impl ServerConnection {
                     encryption_server_to_client,
                 } => {
                     if packet.payload != [numbers::SSH_MSG_NEWKEYS] {
-                        return Err(client_error!("did not send SSH_MSG_NEWKEYS"));
+                        return Err(peer_error!("did not send SSH_MSG_NEWKEYS"));
                     }
 
                     self.packet_transport.queue_packet(Packet {
@@ -331,14 +311,14 @@ impl ServerConnection {
                 ServerState::ServiceRequest => {
                     // TODO: this should probably move out of here? unsure.
                     if packet.payload.first() != Some(&numbers::SSH_MSG_SERVICE_REQUEST) {
-                        return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
+                        return Err(peer_error!("did not send SSH_MSG_SERVICE_REQUEST"));
                     }
                     let mut p = Parser::new(&packet.payload[1..]);
                     let service = p.utf8_string()?;
                     debug!(%service, "Client requesting service");
 
                     if service != "ssh-userauth" {
-                        return Err(client_error!("only supports ssh-userauth"));
+                        return Err(peer_error!("only supports ssh-userauth"));
                     }
 
                     self.packet_transport.queue_packet(Packet {
@@ -385,12 +365,13 @@ impl ServerConnection {
 /// 1Ref4AwwRVdSFyJLGbj2AAAAB3Rlc3RrZXkBAgMEBQY=
 /// -----END OPENSSH PRIVATE KEY-----
 /// ```
-const ED25519_PRIVKEY_BYTES: &[u8; 32] = &[
+// todo: remove this lol, lmao
+pub(crate) const ED25519_PRIVKEY_BYTES: &[u8; 32] = &[
     0x92, 0x7a, 0xc9, 0x31, 0xb8, 0x4b, 0x49, 0xae, 0xbf, 0x4b, 0xed, 0x99, 0x1b, 0xa6, 0x88, 0x17,
     0x0b, 0x9a, 0x4a, 0x44, 0xd5, 0x47, 0xc7, 0x5b, 0x9e, 0x31, 0x7d, 0xa1, 0xd5, 0x75, 0x27, 0x99,
 ];
 
-const ECDSA_P256_PRIVKEY_BYTES: &[u8; 32] = &[
+pub(crate) const ECDSA_P256_PRIVKEY_BYTES: &[u8; 32] = &[
     0x89, 0xdd, 0x0c, 0x96, 0x22, 0x85, 0x10, 0xec, 0x3c, 0xa4, 0xa1, 0xb8, 0xac, 0x2a, 0x77, 0xa8,
     0xd4, 0x4d, 0xcb, 0x9d, 0x90, 0x25, 0xc6, 0xd8, 0x3a, 0x02, 0x74, 0x4f, 0x9e, 0x44, 0xcd, 0xa3,
 ];

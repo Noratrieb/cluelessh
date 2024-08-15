@@ -24,7 +24,7 @@ impl<'a> Parser<'a> {
     pub fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         assert!(N < 100_000);
         if self.0.len() < N {
-            return Err(crate::client_error!("packet too short"));
+            return Err(crate::peer_error!("packet too short"));
         }
         let result = self.0[..N].try_into().unwrap();
         self.0 = &self.0[N..];
@@ -33,10 +33,10 @@ impl<'a> Parser<'a> {
 
     pub fn slice(&mut self, len: usize) -> Result<&'a [u8]> {
         if self.0.len() < len {
-            return Err(crate::client_error!("packet too short"));
+            return Err(crate::peer_error!("packet too short"));
         }
         if len > 100_000 {
-            return Err(crate::client_error!("bytes too long: {len}"));
+            return Err(crate::peer_error!("bytes too long: {len}"));
         }
         let result = &self.0[..len];
         self.0 = &self.0[len..];
@@ -48,7 +48,7 @@ impl<'a> Parser<'a> {
         match b {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(crate::client_error!("invalid bool: {b}")),
+            _ => Err(crate::peer_error!("invalid bool: {b}")),
         }
     }
 
@@ -70,7 +70,7 @@ impl<'a> Parser<'a> {
     pub fn utf8_string(&mut self) -> Result<&'a str> {
         let s = self.string()?;
         let Ok(s) = str::from_utf8(s) else {
-            return Err(crate::client_error!("name-list is invalid UTF-8"));
+            return Err(crate::peer_error!("name-list is invalid UTF-8"));
         };
         Ok(s)
     }
@@ -148,9 +148,12 @@ pub struct NameList<'a>(pub &'a str);
 impl<'a> NameList<'a> {
     pub fn one(item: &'a str) -> Self {
         if item.contains(',') {
-            //panic!("tried creating name list with comma in item: {item}");
+            panic!("tried creating name list with comma in item: {item}");
         }
         Self(item)
+    }
+    pub fn multi(items: &'a str) -> Self {
+        Self(items)
     }
     pub fn none() -> NameList<'static> {
         NameList("")

@@ -4,7 +4,7 @@ use tracing::{debug, info, trace, warn};
 
 use ssh_transport::packet::Packet;
 use ssh_transport::Result;
-use ssh_transport::{client_error, numbers};
+use ssh_transport::{numbers, peer_error};
 
 /// A channel number (on our side).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -171,7 +171,7 @@ impl ServerChannelsState {
                 let our_number = self.next_channel_id;
                 self.next_channel_id =
                     ChannelNumber(self.next_channel_id.0.checked_add(1).ok_or_else(|| {
-                        client_error!("created too many channels, overflowed the counter")
+                        peer_error!("created too many channels, overflowed the counter")
                     })?);
 
                 self.packets_to_send
@@ -213,7 +213,7 @@ impl ServerChannelsState {
                 channel.peer_window_size = channel
                     .peer_window_size
                     .checked_add(bytes_to_add)
-                    .ok_or_else(|| client_error!("window size larger than 2^32"))?;
+                    .ok_or_else(|| peer_error!("window size larger than 2^32"))?;
 
                 if !channel.queued_data.is_empty() {
                     let limit =
@@ -232,14 +232,14 @@ impl ServerChannelsState {
                     .our_window_size
                     .checked_sub(data.len() as u32)
                     .ok_or_else(|| {
-                        client_error!(
+                        peer_error!(
                             "sent more data than the window allows: {} while the window is {}",
                             data.len(),
                             channel.our_window_size
                         )
                     })?;
                 if channel.our_max_packet_size < (data.len() as u32) {
-                    return Err(client_error!(
+                    return Err(peer_error!(
                         "data bigger than allowed packet size: {} while the max packet size is {}",
                         data.len(),
                         channel.our_max_packet_size
@@ -376,7 +376,7 @@ impl ServerChannelsState {
             _ => {
                 todo!(
                     "unsupported packet: {} ({packet_type})",
-                    numbers::packet_type_to_string(packet_type).unwrap_or("<unknown>")
+                    numbers::packet_type_to_string(packet_type)
                 );
             }
         }
@@ -512,7 +512,7 @@ impl ServerChannelsState {
 
     fn validate_channel(&self, number: u32) -> Result<ChannelNumber> {
         if !self.channels.contains_key(&ChannelNumber(number)) {
-            return Err(client_error!("unknown channel: {number}"));
+            return Err(peer_error!("unknown channel: {number}"));
         }
         Ok(ChannelNumber(number))
     }
@@ -520,7 +520,7 @@ impl ServerChannelsState {
     fn channel(&mut self, number: ChannelNumber) -> Result<&mut Channel> {
         self.channels
             .get_mut(&number)
-            .ok_or_else(|| client_error!("unknown channel: {number:?}"))
+            .ok_or_else(|| peer_error!("unknown channel: {number:?}"))
     }
 }
 

@@ -108,7 +108,7 @@ impl ChaCha20Poly1305OpenSsh {
         let read_tag = poly1305::Tag::from_slice(&bytes.full_packet()[tag_offset..]);
 
         if !bool::from(mac.ct_eq(read_tag)) {
-            return Err(crate::client_error!(
+            return Err(crate::peer_error!(
                 "failed to decrypt: invalid poly1305 MAC"
             ));
         }
@@ -199,7 +199,7 @@ impl<'a> Aes256GcmOpenSsh<'a> {
                 encrypted_packet_content,
                 (&tag).into(),
             )
-            .map_err(|_| crate::client_error!("failed to decrypt: invalid GCM MAC"))?;
+            .map_err(|_| crate::peer_error!("failed to decrypt: invalid GCM MAC"))?;
         self.inc_nonce();
 
         Packet::from_full(encrypted_packet_content)

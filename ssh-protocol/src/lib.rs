@@ -77,7 +77,7 @@ impl ServerConnection {
 pub mod auth {
     use std::collections::VecDeque;
 
-    use ssh_transport::{client_error, numbers, packet::Packet, parse::NameList, Result};
+    use ssh_transport::{peer_error, numbers, packet::Packet, parse::NameList, Result};
     use tracing::info;
 
     pub struct BadAuth {
@@ -105,7 +105,7 @@ pub mod auth {
             let mut auth_req = packet.payload_parser();
 
             if auth_req.u8()? != numbers::SSH_MSG_USERAUTH_REQUEST {
-                return Err(client_error!("did not send SSH_MSG_SERVICE_REQUEST"));
+                return Err(peer_error!("did not send SSH_MSG_SERVICE_REQUEST"));
             }
             let username = auth_req.utf8_string()?;
             let service_name = auth_req.utf8_string()?;
@@ -121,7 +121,7 @@ pub mod auth {
             }
 
             if service_name != "ssh-connection" {
-                return Err(client_error!(
+                return Err(peer_error!(
                     "client tried to unsupported service: {service_name}"
                 ));
             }
@@ -130,7 +130,7 @@ pub mod auth {
                 "password" => {
                     let change_password = auth_req.bool()?;
                     if change_password {
-                        return Err(client_error!("client tried to change password unprompted"));
+                        return Err(peer_error!("client tried to change password unprompted"));
                     }
                     let password = auth_req.utf8_string()?;
 
@@ -146,7 +146,7 @@ pub mod auth {
                     self.is_authenticated = true;
                 }
                 _ if self.has_failed => {
-                    return Err(client_error!(
+                    return Err(peer_error!(
                         "client tried unsupported method twice: {method_name}"
                     ));
                 }

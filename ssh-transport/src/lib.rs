@@ -1,3 +1,4 @@
+pub mod client;
 mod crypto;
 pub mod numbers;
 pub mod packet;
@@ -54,7 +55,7 @@ impl rand_core::RngCore for SshRngRandAdapter<'_> {
 }
 
 #[macro_export]
-macro_rules! client_error {
+macro_rules! peer_error {
     ($($tt:tt)*) => {
         $crate::SshStatus::ClientError(::std::format!($($tt)*))
     };

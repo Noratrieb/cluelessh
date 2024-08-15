@@ -1,11 +1,14 @@
 mod ctors;
 
 use std::collections::VecDeque;
+use std::mem;
+
+use tracing::debug;
 
 use crate::crypto::{EncryptionAlgorithm, Keys, Plaintext, Session};
 use crate::parse::{NameList, Parser, Writer};
 use crate::Result;
-use crate::{client_error, numbers};
+use crate::{peer_error, numbers};
 
 /// Frames the byte stream into packets.
 pub(crate) struct PacketTransport {
@@ -15,7 +18,7 @@ pub(crate) struct PacketTransport {
     recv_packets: VecDeque<Packet>,
     recv_next_seq_nr: u64,
 
-    send_packets: VecDeque<Msg>,
+    msgs_to_send: VecDeque<Msg>,
     send_next_seq_nr: u64,
 }
 
@@ -48,7 +51,7 @@ impl PacketTransport {
             recv_packets: VecDeque::new(),
             recv_next_seq_nr: 0,
 
-            send_packets: VecDeque::new(),
+            msgs_to_send: VecDeque::new(),
             send_next_seq_nr: 0,
         }
     }
@@ -95,10 +98,11 @@ impl PacketTransport {
 
     // Private: Make sure all sending goes through variant-specific functions here.
     fn queue_send_msg(&mut self, msg: Msg) {
-        self.send_packets.push_back(msg);
+        self.msgs_to_send.push_back(msg);
     }
+
     pub(crate) fn next_msg_to_send(&mut self) -> Option<Msg> {
-        self.send_packets.pop_front()
+        self.msgs_to_send.pop_front()
     }
 
     pub(crate) fn set_key(
@@ -154,18 +158,18 @@ impl Packet {
 
     pub(crate) fn from_full(bytes: &[u8]) -> Result<Self> {
         let Some(padding_length) = bytes.first() else {
-            return Err(client_error!("empty packet"));
+            return Err(peer_error!("empty packet"));
         };
 
         let Some(payload_len) = (bytes.len() - 1).checked_sub(*padding_length as usize) else {
-            return Err(client_error!("packet padding longer than packet"));
+            return Err(peer_error!("packet padding longer than packet"));
         };
         let payload = &bytes[1..][..payload_len];
 
         // TODO: handle the annoying decryption special case differnt where its +0 instead of +4
         // also TODO: this depends on the cipher!
         //if (bytes.len() + 4) % 8 != 0 {
-        //    return Err(client_error!("full packet length must be multiple of 8: {}", bytes.len()));
+        //    return Err(peer_error!("full packet length must be multiple of 8: {}", bytes.len()));
         //}
 
         Ok(Self {
@@ -244,7 +248,7 @@ impl<'a> KeyExchangeInitPacket<'a> {
 
         let kind = c.u8()?;
         if kind != numbers::SSH_MSG_KEXINIT {
-            return Err(client_error!(
+            return Err(peer_error!(
                 "expected SSH_MSG_KEXINIT packet, found {kind}"
             ));
         }
@@ -313,7 +317,7 @@ impl<'a> KeyExchangeEcDhInitPacket<'a> {
 
         let kind = c.u8()?;
         if kind != numbers::SSH_MSG_KEX_ECDH_INIT {
-            return Err(client_error!(
+            return Err(peer_error!(
                 "expected SSH_MSG_KEXDH_INIT packet, found {kind}"
             ));
         }
@@ -411,7 +415,7 @@ impl PacketParser {
         // 'padding_length', 'payload', 'random padding', and 'mac').
         // Implementations SHOULD support longer packets, where they might be needed.
         if packet_length > 500_000 {
-            return Err(client_error!(
+            return Err(peer_error!(
                 "packet too large (>500_000): {packet_length}"
             ));
         }
@@ -436,6 +440,30 @@ impl PacketParser {
     #[cfg(test)]
     fn test_recv_bytes(&mut self, bytes: &[u8]) -> Option<(usize, RawPacket)> {
         self.recv_bytes_inner(bytes, &mut Plaintext, 0).unwrap()
+    }
+}
+
+pub(crate) struct ProtocolIdentParser(Vec<u8>);
+
+impl ProtocolIdentParser {
+    pub(crate) fn new() -> Self {
+        Self(Vec::new())
+    }
+    pub(crate) fn recv_bytes(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+    pub(crate) fn get_peer_ident(&mut self) -> Option<Vec<u8>> {
+        if self.0.windows(2).any(|win| win == b"\r\n") {
+            // TODO: care that its SSH 2.0 instead of anythin anything else
+            // The peer will not send any more information than this until we respond, so discord the rest of the bytes.
+            let peer_ident = mem::take(&mut self.0);
+            let peer_ident_string = String::from_utf8_lossy(&peer_ident);
+            debug!(identification = %peer_ident_string, "Peer identifier");
+
+            Some(peer_ident)
+        } else {
+            None
+        }
     }
 }
 
