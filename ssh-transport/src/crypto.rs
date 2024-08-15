@@ -23,66 +23,69 @@ impl AlgorithmName for &'static str {
 #[derive(Clone, Copy)]
 pub struct KexAlgorithm {
     name: &'static str,
-    pub exchange: fn(
-        client_public_key: &[u8],
-        random: &mut (dyn SshRng + Send + Sync),
-    ) -> Result<KexAlgorithmOutput>,
+    /// Generate an ephemeral key for the exchange.
+    pub generate_secret: fn(random: &mut (dyn SshRng + Send + Sync)) -> KeyExchangeSecret,
 }
 impl AlgorithmName for KexAlgorithm {
     fn name(&self) -> &'static str {
         self.name
     }
 }
-pub struct KexAlgorithmOutput {
-    /// K
-    pub shared_secret: Vec<u8>,
-    /// Q_S
-    pub server_public_key: Vec<u8>,
+
+pub struct KeyExchangeSecret {
+    /// Q_x
+    pub pubkey: Vec<u8>,
+    /// Does the exchange, returning the shared secret K.
+    pub exchange: Box<dyn FnOnce(&[u8]) -> Result<Vec<u8>> + Send + Sync>,
 }
 
 /// <https://datatracker.ietf.org/doc/html/rfc8731>
 pub const KEX_CURVE_25519_SHA256: KexAlgorithm = KexAlgorithm {
     name: "curve25519-sha256",
-    exchange: |client_public_key, rng| {
+    generate_secret: |rng| {
         let secret = x25519_dalek::EphemeralSecret::random_from_rng(crate::SshRngRandAdapter(rng));
-        let server_public_key = x25519_dalek::PublicKey::from(&secret); // Q_S
+        let my_public_key = x25519_dalek::PublicKey::from(&secret);
 
-        let Ok(arr) = <[u8; 32]>::try_from(client_public_key) else {
-            return Err(crate::peer_error!(
-                "invalid x25519 public key length, should be 32, was: {}",
-                client_public_key.len()
-            ));
-        };
-        let client_public_key = x25519_dalek::PublicKey::from(arr);
-        let shared_secret = secret.diffie_hellman(&client_public_key); // K
+        KeyExchangeSecret {
+            pubkey: my_public_key.as_bytes().to_vec(),
+            exchange: Box::new(move |peer_public_key| {
+                let Ok(peer_public_key) = <[u8; 32]>::try_from(peer_public_key) else {
+                    return Err(crate::peer_error!(
+                        "invalid x25519 public key length, should be 32, was: {}",
+                        peer_public_key.len()
+                    ));
+                };
+                let peer_public_key = x25519_dalek::PublicKey::from(peer_public_key);
+                let shared_secret = secret.diffie_hellman(&peer_public_key); // K
 
-        Ok(KexAlgorithmOutput {
-            server_public_key: server_public_key.as_bytes().to_vec(),
-            shared_secret: shared_secret.as_bytes().to_vec(),
-        })
+                Ok(shared_secret.as_bytes().to_vec())
+            }),
+        }
     },
 };
 /// <https://datatracker.ietf.org/doc/html/rfc5656>
 pub const KEX_ECDH_SHA2_NISTP256: KexAlgorithm = KexAlgorithm {
     name: "ecdh-sha2-nistp256",
-    exchange: |client_public_key, rng| {
+    generate_secret: |rng| {
         let secret = p256::ecdh::EphemeralSecret::random(&mut crate::SshRngRandAdapter(rng));
-        let server_public_key = p256::EncodedPoint::from(secret.public_key()); // Q_S
+        let my_public_key = p256::EncodedPoint::from(secret.public_key());
 
-        let client_public_key =
-            p256::PublicKey::from_sec1_bytes(client_public_key).map_err(|_| {
-                crate::peer_error!(
-                    "invalid p256 public key length: {}",
-                    client_public_key.len()
-                )
-            })?; // Q_C
+        KeyExchangeSecret {
+            pubkey: my_public_key.as_bytes().to_vec(),
+            exchange: Box::new(move |peer_public_key| {
+                let peer_public_key =
+                    p256::PublicKey::from_sec1_bytes(peer_public_key).map_err(|_| {
+                        crate::peer_error!(
+                            "invalid p256 public key length: {}",
+                            peer_public_key.len()
+                        )
+                    })?;
 
-        let shared_secret = secret.diffie_hellman(&client_public_key); // K
+                let shared_secret = secret.diffie_hellman(&peer_public_key); // K
 
-        Ok(KexAlgorithmOutput {
-            server_public_key: server_public_key.as_bytes().to_vec(),
-            shared_secret: shared_secret.raw_secret_bytes().to_vec(),
-        })
+                Ok(shared_secret.raw_secret_bytes().to_vec())
+            }),
+        }
     },
 };
 
@@ -191,8 +194,8 @@ pub struct AlgorithmNegotiation<T> {
 }
 
 impl<T: AlgorithmName> AlgorithmNegotiation<T> {
-    pub fn find<'a>(mut self, client_supports: &str) -> Result<T> {
-        for client_alg in client_supports.split(',') {
+    pub fn find<'a>(mut self, peer_supports: &str) -> Result<T> {
+        for client_alg in peer_supports.split(',') {
             if let Some(alg) = self
                 .supported
                 .iter()
@@ -203,7 +206,7 @@ impl<T: AlgorithmName> AlgorithmNegotiation<T> {
         }
 
         Err(peer_error!(
-            "peer does not support any matching algorithm: peer supports: {client_supports:?}"
+            "peer does not support any matching algorithm: peer supports: {peer_supports:?}"
         ))
     }
 }

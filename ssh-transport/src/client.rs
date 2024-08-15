@@ -3,7 +3,10 @@ use std::{collections::VecDeque, mem};
 use tracing::{debug, info, trace};
 
 use crate::{
-    crypto::{self, AlgorithmName, AlgorithmNegotiation},
+    crypto::{
+        self, AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm, HostKeySigningAlgorithm,
+        KeyExchangeSecret, SupportedAlgorithms,
+    },
     numbers,
     packet::{Packet, PacketTransport, ProtocolIdentParser},
     parse::{NameList, Parser, Writer},
@@ -25,6 +28,15 @@ enum ClientState {
     },
     KexInit {
         client_ident: Vec<u8>,
+        server_ident: Vec<u8>,
+    },
+    DhKeyInit {
+        client_ident: Vec<u8>,
+        server_ident: Vec<u8>,
+        kex_secret: Option<KeyExchangeSecret>,
+        server_hostkey_algorithm: HostKeySigningAlgorithm,
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
     },
 }
 
@@ -54,10 +66,10 @@ impl ClientConnection {
         } = &mut self.state
         {
             ident_parser.recv_bytes(bytes);
-            if ident_parser.get_peer_ident().is_some() {
+            if let Some(server_ident) = ident_parser.get_peer_ident() {
                 let client_ident = mem::take(client_ident);
                 // This moves to the next state.
-                self.send_kexinit(client_ident);
+                self.send_kexinit(client_ident, server_ident);
                 return Ok(());
             }
             return Ok(());
@@ -92,7 +104,10 @@ impl ClientConnection {
 
             match &mut self.state {
                 ClientState::ProtoExchange { .. } => unreachable!("handled above"),
-                ClientState::KexInit { client_ident } => {
+                ClientState::KexInit {
+                    client_ident,
+                    server_ident,
+                } => {
                     let mut kexinit = packet.payload_parser();
                     let packet_type = kexinit.u8()?;
                     if packet_type != numbers::SSH_MSG_KEXINIT {
@@ -101,60 +116,95 @@ impl ClientConnection {
                             numbers::packet_type_to_string(packet_type)
                         ));
                     }
-/* 
+
+                    let sup_algs = SupportedAlgorithms::secure();
+
                     let cookie = kexinit.array::<16>()?;
+
                     let kex_algorithm = kexinit.name_list()?;
-                    let kex_algorithms = AlgorithmNegotiation {
-                        supported: vec![
-                            crypto::KEX_CURVE_25519_SHA256,
-                            crypto::KEX_ECDH_SHA2_NISTP256,
-                        ],
-                    };
-                    let kex_algorithm = kex_algorithms.find(kex_algorithm.0)?;
+                    let kex_algorithm = sup_algs.key_exchange.find(kex_algorithm.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
                     let server_hostkey_algorithm = kexinit.name_list()?;
-                    let server_hostkey_algorithms = AlgorithmNegotiation {
-                        supported: vec![
-                            crypto::hostkey_ed25519(ED25519_PRIVKEY_BYTES.to_vec()),
-                            crypto::hostkey_ecdsa_sha2_p256(ECDSA_P256_PRIVKEY_BYTES.to_vec()),
-                        ],
-                    };
                     let server_hostkey_algorithm =
-                        server_hostkey_algorithms.find(server_hostkey_algorithm.0)?;
+                        sup_algs.hostkey.find(server_hostkey_algorithm.0)?;
                     debug!(name = %server_hostkey_algorithm.name(), "Using host key algorithm");
 
                     let encryption_algorithms_client_to_server = kexinit.name_list()?;
-                    let encryption_algorithms_client_to_server = select_alg(
-                        encryption_algorithms_client_to_server,
-                        [
-                            crypto::encrypt::CHACHA20POLY1305,
-                            crypto::encrypt::AES256_GCM,
-                        ],
-                    );
+                    let encryption_client_to_server = sup_algs
+                        .encryption_to_peer
+                        .find(encryption_algorithms_client_to_server.0)?;
+                    debug!(name = %encryption_client_to_server.name(), "Using encryption algorithm C->S");
+
                     let encryption_algorithms_server_to_client = kexinit.name_list()?;
-                    let encryption_algorithms_server_to_client = select_alg(
-                        encryption_algorithms_server_to_client,
-                        [
-                            crypto::encrypt::CHACHA20POLY1305,
-                            crypto::encrypt::AES256_GCM,
-                        ],
-                    );
+                    let encryption_server_to_client = sup_algs
+                        .encryption_from_peer
+                        .find(encryption_algorithms_server_to_client.0)?;
+                    debug!(name = %encryption_server_to_client.name(), "Using encryption algorithm S->C");
+
                     let mac_algorithms_client_to_server = kexinit.name_list()?;
-                    select_alg(mac_algorithms_client_to_server, ["hmac-sha2-256"])?;
+                    let _mac_client_to_server = sup_algs
+                        .mac_to_peer
+                        .find(mac_algorithms_client_to_server.0)?;
                     let mac_algorithms_server_to_client = kexinit.name_list()?;
-                    select_alg(mac_algorithms_server_to_client, ["hmac-sha2-256"])?;
+                    let _mac_server_to_client = sup_algs
+                        .mac_from_peer
+                        .find(mac_algorithms_server_to_client.0)?;
 
                     let compression_algorithms_client_to_server = kexinit.name_list()?;
-                    select_alg(compression_algorithms_client_to_server, ["none"])?;
+                    let _compression_client_to_server = sup_algs
+                        .compression_to_peer
+                        .find(compression_algorithms_client_to_server.0)?;
                     let compression_algorithms_server_to_client = kexinit.name_list()?;
-                    select_alg(compression_algorithms_server_to_client, ["none"])?;
+                    let _compression_server_to_client = sup_algs
+                        .compression_from_peer
+                        .find(compression_algorithms_server_to_client.0)?;
+
                     let _languages_client_to_server = kexinit.name_list()?;
                     let _languages_server_to_client = kexinit.name_list()?;
                     let first_kex_packet_follows = kexinit.bool()?;
                     if first_kex_packet_follows {
                         return Err(peer_error!("does not support guessed kex init packages"));
-                    }*/
+                    }
+
+                    let kex_secret = (kex_algorithm.generate_secret)(&mut *self.rng);
+
+                    self.packet_transport
+                        .queue_packet(Packet::new_msg_kex_ecdh_init(&kex_secret.pubkey));
+
+                    self.state = ClientState::DhKeyInit {
+                        client_ident: mem::take(client_ident),
+                        server_ident: mem::take(server_ident),
+                        kex_secret: Some(kex_secret),
+                        server_hostkey_algorithm,
+                        encryption_client_to_server,
+                        encryption_server_to_client,
+                    };
+                }
+                ClientState::DhKeyInit {
+                    client_ident,
+                    server_ident,
+                    kex_secret,
+                    server_hostkey_algorithm,
+                    encryption_client_to_server,
+                    encryption_server_to_client,
+                } => {
+                    let mut dh = packet.payload_parser();
+
+                    let packet_type = dh.u8()?;
+                    if packet_type != numbers::SSH_MSG_KEX_ECDH_REPLY {
+                        return Err(peer_error!(
+                            "expected SSH_MSG_KEX_ECDH_REPLY, found {}",
+                            numbers::packet_type_to_string(packet_type)
+                        ));
+                    }
+
+                    let sever_host_key = dh.string()?;
+                    let server_ephermal_key = dh.string()?;
+                    let signature = dh.string()?;
+
+                    let shared_secret =
+                        (mem::take(kex_secret).unwrap().exchange)(server_ephermal_key)?;
                 }
             }
         }
@@ -165,7 +215,7 @@ impl ClientConnection {
         self.packet_transport.next_msg_to_send()
     }
 
-    fn send_kexinit(&mut self, client_ident: Vec<u8>) {
+    fn send_kexinit(&mut self, client_ident: Vec<u8>, server_ident: Vec<u8>) {
         let mut cookie = [0; 16];
         self.rng.fill_bytes(&mut cookie);
 
@@ -192,6 +242,9 @@ impl ClientConnection {
 
         self.packet_transport
             .queue_packet(Packet { payload: kexinit });
-        self.state = ClientState::KexInit { client_ident };
+        self.state = ClientState::KexInit {
+            client_ident,
+            server_ident,
+        };
     }
 }

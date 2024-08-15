@@ -1,9 +1,7 @@
-use core::str;
 use std::{collections::VecDeque, mem::take};
 
 use crate::crypto::{
-    self, AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm, HostKeySigningAlgorithm,
-    SupportedAlgorithms,
+    self, AlgorithmName, EncryptionAlgorithm, HostKeySigningAlgorithm, SupportedAlgorithms,
 };
 use crate::packet::{
     KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, ProtocolIdentParser,
@@ -112,17 +110,6 @@ impl ServerConnection {
                 } => {
                     let kex = KeyExchangeInitPacket::parse(&packet.payload)?;
 
-                    let require_algorithm =
-                        |expected: &'static str, list: NameList<'_>| -> Result<&'static str> {
-                            if list.iter().any(|alg| alg == expected) {
-                                Ok(expected)
-                            } else {
-                                Err(peer_error!(
-                                "client does not support algorithm {expected}. supported: {list:?}",
-                            ))
-                            }
-                        };
-
                     let sup_algs = SupportedAlgorithms::secure();
 
                     let kex_algorithm = sup_algs.key_exchange.find(kex.kex_algorithms.0)?;
@@ -151,7 +138,6 @@ impl ServerConnection {
                     let mac_algorithm_server_to_client = sup_algs
                         .mac_to_peer
                         .find(kex.mac_algorithms_server_to_client.0)?;
-                    debug!("x");
 
                     let compression_algorithm_client_to_server = sup_algs
                         .compression_from_peer
@@ -159,7 +145,7 @@ impl ServerConnection {
                     let compression_algorithm_server_to_client = sup_algs
                         .compression_to_peer
                         .find(kex.compression_algorithms_server_to_client.0)?;
-                    debug!("x");
+
                     let _ = kex.languages_client_to_server;
                     let _ = kex.languages_server_to_client;
 
@@ -226,10 +212,9 @@ impl ServerConnection {
 
                     let client_public_key = dh.qc;
 
-                    let crypto::KexAlgorithmOutput {
-                        server_public_key,
-                        shared_secret,
-                    } = (kex_algorithm.exchange)(client_public_key, &mut *self.rng)?;
+                    let server_secret = (kex_algorithm.generate_secret)(&mut *self.rng);
+                    let server_public_key = server_secret.pubkey;
+                    let shared_secret = (server_secret.exchange)(client_public_key)?;
 
                     let pub_hostkey = server_host_key_algorithm.public_key();
 

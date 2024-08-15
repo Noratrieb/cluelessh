@@ -3,7 +3,7 @@ mod ctors;
 use std::collections::VecDeque;
 use std::mem;
 
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::crypto::{EncryptionAlgorithm, Keys, Plaintext, Session};
 use crate::parse::{NameList, Parser, Writer};
@@ -82,6 +82,9 @@ impl PacketTransport {
     }
 
     pub(crate) fn queue_packet(&mut self, packet: Packet) {
+        let packet_type = packet.packet_type();
+        let packet_type_string = numbers::packet_type_to_string(packet_type);
+        trace!(%packet_type, %packet_type_string, packet_len = %packet.payload.len(), "Sending packet");
         let seq_nr = self.send_next_seq_nr;
         self.send_next_seq_nr = self.send_next_seq_nr.wrapping_add(1);
         let msg = self.keys.encrypt_packet_to_msg(packet, seq_nr);
