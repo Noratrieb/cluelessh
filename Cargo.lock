@@ -911,6 +911,7 @@ version = "0.1.0"
 dependencies = [
  "ssh-transport",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
