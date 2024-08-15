@@ -89,13 +89,13 @@ impl ClientConnection {
         self.packet_transport.recv_bytes(bytes)?;
 
         while let Some(packet) = self.packet_transport.recv_next_packet() {
-            let packet_type = packet.payload.get(0).unwrap_or(&0xFF);
+            let packet_type = packet.payload.first().unwrap_or(&0xFF);
             let packet_type_string = numbers::packet_type_to_string(*packet_type);
 
             trace!(%packet_type, %packet_type_string, packet_len = %packet.payload.len(), "Received packet");
 
             // Handle some packets ignoring the state.
-            match packet.payload.get(0).copied() {
+            match packet.payload.first().copied() {
                 Some(numbers::SSH_MSG_DISCONNECT) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.1>
                     let mut disconnect = Parser::new(&packet.payload[1..]);

@@ -490,7 +490,7 @@ impl ServerChannelsState {
     /// Send a single data packet.
     /// The caller needs to ensure the windowing and packet size requirements are upheld.
     fn send_data_packet(&mut self, channel_number: ChannelNumber, data: &[u8]) {
-        assert!(data.len() > 0, "Trying to send empty data packet");
+        assert!(!data.is_empty(), "Trying to send empty data packet");
 
         trace!(%channel_number, amount = %data.len(), "Sending channel data");
         let channel = self.channel(channel_number).unwrap();

@@ -228,7 +228,7 @@ pub struct AlgorithmNegotiation<T> {
 }
 
 impl<T: AlgorithmName> AlgorithmNegotiation<T> {
-    pub fn find<'a>(mut self, peer_supports: &str) -> Result<T> {
+    pub fn find(mut self, peer_supports: &str) -> Result<T> {
         for client_alg in peer_supports.split(',') {
             if let Some(alg) = self
                 .supported
@@ -455,7 +455,7 @@ fn derive_key(
 
     for i in 0..(padded_key_size / sha2len) {
         let mut hash = <sha2::Sha256 as sha2::Digest>::new();
-        encode_mpint_for_hash(&k, |data| hash.update(data));
+        encode_mpint_for_hash(k, |data| hash.update(data));
         hash.update(h);
 
         if i == 0 {

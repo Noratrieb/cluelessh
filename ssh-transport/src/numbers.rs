@@ -84,7 +84,7 @@ pub fn packet_type_to_string(packet_type: u8) -> &'static str {
         98 => "SSH_MSG_CHANNEL_REQUEST",
         99 => "SSH_MSG_CHANNEL_SUCCESS",
         100 => "SSH_MSG_CHANNEL_FAILURE",
-        _ => return "<unknown>",
+        _ => "<unknown>",
     }
 }
 
