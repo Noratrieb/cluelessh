@@ -78,6 +78,12 @@ ctors! {
     fn new_msg_request_failure(SSH_MSG_REQUEST_FAILURE;);
 
     // 90 to 127  Channel related messages
+    fn new_msg_channel_open_session(SSH_MSG_CHANNEL_OPEN;
+        session: string,
+        sender_channel: u32,
+        initial_window_size: u32,
+        maximum_packet_size: u32,
+    );
     fn new_msg_channel_open_confirmation(SSH_MSG_CHANNEL_OPEN_CONFIRMATION;
         peer_channel: u32,
         sender_channel: u32,
@@ -96,6 +102,22 @@ ctors! {
     fn new_msg_channel_eof(SSH_MSG_CHANNEL_EOF; recipient_channel: u32);
     fn new_msg_channel_close(SSH_MSG_CHANNEL_CLOSE; recipient_channel: u32);
 
+    fn new_msg_channel_request_pty_req(SSH_MSG_CHANNEL_REQUEST;
+        recipient_channel: u32,
+        kind_pty_req: string,
+        want_reply: bool,
+        term: string,
+        term_width_char: u32,
+        term_height_rows: u32,
+        term_width_px: u32,
+        term_height_px: u32,
+        term_modes: string,
+    );
+    fn new_msg_channel_request_shell(SSH_MSG_CHANNEL_REQUEST;
+        recipient_channel: u32,
+        kind_shell: string,
+        want_reply: bool,
+    );
     fn new_msg_channel_request_exit_status(SSH_MSG_CHANNEL_REQUEST; recipient_channel: u32, kind_exit_status: string, false_: bool, exit_status: u32);
 
     fn new_msg_channel_success(SSH_MSG_CHANNEL_SUCCESS; recipient_channel: u32);

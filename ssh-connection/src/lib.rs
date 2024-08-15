@@ -399,13 +399,14 @@ impl ServerChannelsState {
     pub fn do_operation(&mut self, op: ChannelOperation) {
         op.trace();
 
-        let channel = self
-            .channel(op.number)
-            .expect("passed channel ID that does not exist");
+        let Ok(channel) = self.channel(op.number) else {
+            debug!(number = %op.number, "Dropping operation as channel does not exist, probably because it has been closed");
+            return;
+        };
         let peer = channel.peer_channel;
 
         if channel.we_closed {
-            debug!("Dropping operation as channel has been closed already");
+            debug!(number = %op.number, "Dropping operation as channel has been closed already");
             return;
         }
 
@@ -534,20 +535,88 @@ impl ChannelOperation {
 
 #[cfg(test)]
 mod tests {
-    use ssh_transport::packet::Packet;
+    use ssh_transport::{numbers, packet::Packet};
 
-    use crate::ServerChannelsState;
+    use crate::{ChannelNumber, ChannelOperation, ChannelOperationKind, ServerChannelsState};
 
-    #[test]
-    fn only_single_close_for_double_close_operation() {
-        let state = ServerChannelsState::new();
-        //state.recv_packet();
+    fn assert_response(state: &mut ServerChannelsState, types: &[u8]) {
+        let response = state
+            .packets_to_send()
+            .map(|p| numbers::packet_type_to_string(p.packet_type()))
+            .collect::<Vec<_>>();
+
+        let expected = types
+            .iter()
+            .map(|p| numbers::packet_type_to_string(*p))
+            .collect::<Vec<_>>();
+        assert_eq!(expected, response);
+    }
+
+    fn open_session_channel(state: &mut ServerChannelsState) {
+        state
+            .recv_packet(Packet::new_msg_channel_open_session(
+                b"session", 0, 2048, 1024,
+            ))
+            .unwrap();
+        assert_response(state, &[numbers::SSH_MSG_CHANNEL_OPEN_CONFIRMATION]);
     }
 
     #[test]
-    #[should_panic]
-    fn panic_when_data_operation_after_close() {
-        let state = ServerChannelsState::new();
-        //state.recv_packet();
+    fn interactive_pty() {
+        let state = &mut ServerChannelsState::new();
+        open_session_channel(state);
+
+        state
+            .recv_packet(Packet::new_msg_channel_request_pty_req(
+                0, b"pty-req", true, b"xterm", 80, 24, 0, 0, b"",
+            ))
+            .unwrap();
+        state.do_operation(ChannelNumber(0).construct_op(ChannelOperationKind::Success));
+        assert_response(state, &[numbers::SSH_MSG_CHANNEL_SUCCESS]);
+
+        state
+            .recv_packet(Packet::new_msg_channel_request_shell(0, b"shell", true))
+            .unwrap();
+        state.do_operation(ChannelNumber(0).construct_op(ChannelOperationKind::Success));
+        assert_response(state, &[numbers::SSH_MSG_CHANNEL_SUCCESS]);
+
+        state
+            .recv_packet(Packet::new_msg_channel_data(0, b"hello, world"))
+            .unwrap();
+        assert_response(state, &[]);
+
+        state.recv_packet(Packet::new_msg_channel_eof(0)).unwrap();
+        assert_response(state, &[]);
+
+        state.recv_packet(Packet::new_msg_channel_close(0)).unwrap();
+        assert_response(state, &[numbers::SSH_MSG_CHANNEL_CLOSE]);
+    }
+
+    #[test]
+    fn only_single_close_for_double_close_operation() {
+        let state = &mut ServerChannelsState::new();
+        open_session_channel(state);
+        state.do_operation(ChannelOperation {
+            number: ChannelNumber(0),
+            kind: ChannelOperationKind::Close,
+        });
+        state.do_operation(ChannelOperation {
+            number: ChannelNumber(0),
+            kind: ChannelOperationKind::Close,
+        });
+        assert_response(state, &[numbers::SSH_MSG_CHANNEL_CLOSE]);
+    }
+
+    #[test]
+    fn ignore_operation_after_close() {
+        let mut state = &mut ServerChannelsState::new();
+        open_session_channel(state);
+        state.recv_packet(Packet::new_msg_channel_close(0)).unwrap();
+        assert_response(&mut state, &[numbers::SSH_MSG_CHANNEL_CLOSE]);
+        state.do_operation(ChannelOperation {
+            number: ChannelNumber(0),
+            kind: ChannelOperationKind::Data(vec![0]),
+        });
+        assert_response(state, &[]);
     }
 }

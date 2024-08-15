@@ -148,6 +148,10 @@ pub struct Packet {
 impl Packet {
     pub const DEFAULT_BLOCK_SIZE: u8 = 8;
 
+    pub fn packet_type(&self) -> u8 {
+        self.payload[0]
+    }
+
     pub(crate) fn from_full(bytes: &[u8]) -> Result<Self> {
         let Some(padding_length) = bytes.first() else {
             return Err(client_error!("empty packet"));
