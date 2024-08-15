@@ -5,6 +5,6 @@
   cargoLock.lockFile = ./Cargo.lock;
 
   meta = {
-    mainProgram = "fakessh";
+    mainProgram = "fakesshd";
   };
 }
