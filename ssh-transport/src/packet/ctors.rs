@@ -90,6 +90,7 @@ ctors! {
         description: string,
         language_tag: string,
     );
+    fn new_msg_channel_window_adjust(SSH_MSG_CHANNEL_WINDOW_ADJUST; recipient_channel: u32, bytes_to_add: u32);
     fn new_msg_channel_data(SSH_MSG_CHANNEL_DATA; recipient_channel: u32, data: string);
 
     fn new_msg_channel_eof(SSH_MSG_CHANNEL_EOF; recipient_channel: u32);

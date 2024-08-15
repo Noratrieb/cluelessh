@@ -64,6 +64,8 @@ pub fn packet_type_to_string(packet_type: u8) -> Option<&'static str> {
         6 => "SSH_MSG_SERVICE_ACCEPT",
         20 => "SSH_MSG_KEXINIT",
         21 => "SSH_MSG_NEWKEYS",
+        30 => "SSH_MSG_KEX_ECDH_INIT",
+        31 => "SSH_MSG_KEX_ECDH_REPLY",
         50 => "SSH_MSG_USERAUTH_REQUEST",
         51 => "SSH_MSG_USERAUTH_FAILURE",
         52 => "SSH_MSG_USERAUTH_SUCCESS",

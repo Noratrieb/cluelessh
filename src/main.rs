@@ -45,10 +45,24 @@ async fn main() -> eyre::Result<()> {
                 let mut total_sent_data = Vec::new();
 
                 if let Err(err) = handle_connection(next, &mut total_sent_data).await {
+                    if let Some(err) = err.downcast_ref::<std::io::Error>() {
+                        if err.kind() == std::io::ErrorKind::ConnectionReset {
+                            return;
+                        }
+                    }
+
                     error!(?err, "error handling connection");
                 }
 
-                info!(stdin = %String::from_utf8_lossy(&total_sent_data), "Finished connection");
+                // Limit stdin to 500 characters.
+                let stdin = String::from_utf8_lossy(&total_sent_data);
+                let stdin = if let Some((idx, _)) = stdin.char_indices().nth(500) {
+                    &stdin[..idx]
+                } else {
+                    &stdin
+                };
+
+                info!(?stdin, "Finished connection");
             }
             .instrument(span),
         );
@@ -111,6 +125,7 @@ async fn handle_connection(
         }
 
         while let Some(update) = state.next_channel_update() {
+            //eprintln!("{:?}", update);
             match update.kind {
                 ChannelUpdateKind::Open(kind) => match kind {
                     ChannelOpen::Session => {
@@ -126,6 +141,21 @@ async fn handle_connection(
                             }
                         }
                         ChannelRequest::Shell { want_reply } => {
+                            state.do_operation(
+                                update.number.construct_op(ChannelOperationKind::Data(
+                                    vec![b'a'; 1_000_000],
+                                )),
+                            );
+                            state.do_operation(
+                                update.number.construct_op(ChannelOperationKind::Data(
+                                    vec![b'b'; 1_000_000],
+                                )),
+                            );
+                            state.do_operation(
+                                update.number.construct_op(ChannelOperationKind::Data(
+                                    vec![b'c'; 1_000_000],
+                                )),
+                            );
                             if want_reply {
                                 state.do_operation(success);
                             }
@@ -177,11 +207,11 @@ async fn handle_connection(
                                 b"Thanks Hayley!".to_vec(),
                             )),
                         );
-                        state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
+                        //state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
                     }
 
-                    if is_eof {
-                        debug!(channel = %update.number, "Received EOF, closing channel");
+                    if false && is_eof {
+                        debug!(channel = %update.number, "Received Ctrl-C, closing channel");
 
                         state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
                     }

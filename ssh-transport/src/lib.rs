@@ -205,10 +205,18 @@ impl ServerConnection {
                     debug!(name = %server_host_key_algorithm.name(), "Using host key algorithm");
 
                     let encryption_algorithms_client_to_server = AlgorithmNegotiation {
-                        supported: vec![crypto::ENC_CHACHA20POLY1305, crypto::ENC_AES256_GCM],
+                        supported: vec![
+                            crypto::encrypt::CHACHA20POLY1305,
+                            crypto::encrypt::AES256_GCM,
+                            // crypto::encrypt::ENC_AES128_CTR,
+                        ],
                     };
                     let encryption_algorithms_server_to_client = AlgorithmNegotiation {
-                        supported: vec![crypto::ENC_CHACHA20POLY1305, crypto::ENC_AES256_GCM],
+                        supported: vec![
+                            crypto::encrypt::CHACHA20POLY1305,
+                            crypto::encrypt::AES256_GCM,
+                            // crypto::encrypt::ENC_AES128_CTR,
+                        ],
                     };
 
                     let encryption_client_to_server = encryption_algorithms_client_to_server

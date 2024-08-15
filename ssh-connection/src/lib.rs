@@ -1,5 +1,6 @@
+use std::cmp;
 use std::collections::{HashMap, VecDeque};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use ssh_transport::packet::Packet;
 use ssh_transport::Result;
@@ -28,14 +29,32 @@ struct Channel {
     we_closed: bool,
     /// The channel number for the other side.
     peer_channel: u32,
+    /// The current max window size of our peer, controls how many bytes we can still send.
+    peer_window_size: u32,
+    /// The max packet size of the peer.
+    // We need to split our packets if the user requests more.
+    peer_max_packet_size: u32,
+
+    /// For validation only.
+    our_window_size: u32,
+    /// For validation only.
+    our_max_packet_size: u32,
+    /// By how much we want to increase the window when it gets small.
+    our_window_size_increase_step: u32,
+
+    /// Queued data that we want to send, but have not been able to because of the window limits.
+    /// Whenever we get more window space, we will send this data.
+    queued_data: Vec<u8>,
 }
 
 /// An update from a channel.
 /// The receiver-equivalent of [`ChannelOperation`].
+#[derive(Debug)]
 pub struct ChannelUpdate {
     pub number: ChannelNumber,
     pub kind: ChannelUpdateKind,
 }
+#[derive(Debug)]
 pub enum ChannelUpdateKind {
     Open(ChannelOpen),
     Request(ChannelRequest),
@@ -44,11 +63,11 @@ pub enum ChannelUpdateKind {
     Eof,
     Closed,
 }
-
+#[derive(Debug)]
 pub enum ChannelOpen {
     Session,
 }
-
+#[derive(Debug)]
 pub enum ChannelRequest {
     PtyReq {
         want_reply: bool,
@@ -168,6 +187,13 @@ impl ServerChannelsState {
                     Channel {
                         we_closed: false,
                         peer_channel: sender_channel,
+                        peer_max_packet_size: max_packet_size,
+                        peer_window_size: initial_window_size,
+                        our_max_packet_size: max_packet_size,
+                        our_window_size: initial_window_size,
+                        our_window_size_increase_step: initial_window_size,
+
+                        queued_data: Vec::new(),
                     },
                 );
 
@@ -178,10 +204,58 @@ impl ServerChannelsState {
 
                 debug!(%channel_type, %our_number, "Successfully opened channel");
             }
+            numbers::SSH_MSG_CHANNEL_WINDOW_ADJUST => {
+                let our_channel = packet.u32()?;
+                let our_channel = self.validate_channel(our_channel)?;
+                let bytes_to_add = packet.u32()?;
+
+                let channel = self.channel(our_channel)?;
+                channel.peer_window_size = channel
+                    .peer_window_size
+                    .checked_add(bytes_to_add)
+                    .ok_or_else(|| client_error!("window size larger than 2^32"))?;
+
+                if !channel.queued_data.is_empty() {
+                    let limit =
+                        cmp::min(channel.queued_data.len(), channel.peer_window_size as usize);
+                    let data_to_send = channel.queued_data.splice(..limit, []).collect::<Vec<_>>();
+                    self.send_data(our_channel, &data_to_send);
+                }
+            }
             numbers::SSH_MSG_CHANNEL_DATA => {
                 let our_channel = packet.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
                 let data = packet.string()?;
+
+                let channel = self.channel(our_channel)?;
+                channel.our_window_size = channel
+                    .our_window_size
+                    .checked_sub(data.len() as u32)
+                    .ok_or_else(|| {
+                        client_error!(
+                            "sent more data than the window allows: {} while the window is {}",
+                            data.len(),
+                            channel.our_window_size
+                        )
+                    })?;
+                if channel.our_max_packet_size < (data.len() as u32) {
+                    return Err(client_error!(
+                        "data bigger than allowed packet size: {} while the max packet size is {}",
+                        data.len(),
+                        channel.our_max_packet_size
+                    ));
+                }
+
+                trace!(channel = %our_channel, window = %channel.our_window_size, "Remaining window on our side");
+
+                // We probably want to make this user-controllable in the future.
+                if channel.our_window_size < 1000 {
+                    let peer = channel.peer_channel;
+                    let bytes_to_add = channel.our_window_size_increase_step;
+                    channel.our_window_size += bytes_to_add;
+                    self.packets_to_send
+                        .push_back(Packet::new_msg_channel_window_adjust(peer, bytes_to_add))
+                }
 
                 self.channel_updates.push_back(ChannelUpdate {
                     number: our_channel,
@@ -206,6 +280,7 @@ impl ServerChannelsState {
                 let our_channel = self.validate_channel(our_channel)?;
                 let channel = self.channel(our_channel)?;
                 if !channel.we_closed {
+                    info!("closeing here");
                     let close = Packet::new_msg_channel_close(channel.peer_channel);
                     self.packets_to_send.push_back(close);
                 }
@@ -225,7 +300,7 @@ impl ServerChannelsState {
                 let request_type = packet.utf8_string()?;
                 let want_reply = packet.bool()?;
 
-                debug!(%our_channel, %request_type, "Got channel request");
+                debug!(channel = %our_channel, %request_type, "Got channel request");
 
                 let channel = self.channel(our_channel)?;
                 let peer_channel = channel.peer_channel;
@@ -240,7 +315,7 @@ impl ServerChannelsState {
                         let term_modes = packet.string()?;
 
                         debug!(
-                            %our_channel,
+                            channel = %our_channel,
                             %term,
                             %width_chars,
                             %height_rows,
@@ -258,12 +333,12 @@ impl ServerChannelsState {
                         }
                     }
                     "shell" => {
-                        info!(%our_channel, "Opening shell");
+                        info!(channel = %our_channel, "Opening shell");
                         ChannelRequest::Shell { want_reply }
                     }
                     "exec" => {
                         let command = packet.string()?;
-                        info!(%our_channel, command = %String::from_utf8_lossy(command), "Executing command");
+                        info!(channel = %our_channel, command = %String::from_utf8_lossy(command), "Executing command");
                         ChannelRequest::Exec {
                             want_reply,
                             command: command.to_owned(),
@@ -273,7 +348,7 @@ impl ServerChannelsState {
                         let name = packet.utf8_string()?;
                         let value = packet.string()?;
 
-                        info!(%our_channel, %name, value = %String::from_utf8_lossy(value), "Setting environment variable");
+                        info!(channel = %our_channel, %name, value = %String::from_utf8_lossy(value), "Setting environment variable");
 
                         ChannelRequest::Env {
                             want_reply,
@@ -282,12 +357,12 @@ impl ServerChannelsState {
                         }
                     }
                     "signal" => {
-                        debug!(%our_channel, "Received signal");
+                        debug!(channel = %our_channel, "Received signal");
                         // Ignore signals, something we can do.
                         return Ok(());
                     }
                     _ => {
-                        warn!(%request_type, %our_channel, "Unknown channel request");
+                        warn!(%request_type, channel = %our_channel, "Unknown channel request");
                         self.send_channel_failure(peer_channel);
                         return Ok(());
                     }
@@ -299,7 +374,10 @@ impl ServerChannelsState {
                 })
             }
             _ => {
-                todo!("unsupported packet: {} ({packet_type})", numbers::packet_type_to_string(packet_type).unwrap_or("<unknown>"));
+                todo!(
+                    "unsupported packet: {} ({packet_type})",
+                    numbers::packet_type_to_string(packet_type).unwrap_or("<unknown>")
+                );
             }
         }
 
@@ -314,17 +392,28 @@ impl ServerChannelsState {
         self.channel_updates.pop_front()
     }
 
+    /// Executes an operation on the channel.
+    ///
+    /// # Panics
+    /// This will panic when the channel has already been closed.
     pub fn do_operation(&mut self, op: ChannelOperation) {
-        let peer = self
+        op.trace();
+
+        let channel = self
             .channel(op.number)
-            .expect("passed channel ID that does not exist")
-            .peer_channel;
+            .expect("passed channel ID that does not exist");
+        let peer = channel.peer_channel;
+
+        if channel.we_closed {
+            debug!("Dropping operation as channel has been closed already");
+            return;
+        }
+
         match op.kind {
             ChannelOperationKind::Success => self.send_channel_success(peer),
             ChannelOperationKind::Failure => self.send_channel_failure(peer),
             ChannelOperationKind::Data(data) => {
-                self.packets_to_send
-                    .push_back(Packet::new_msg_channel_data(peer, &data));
+                self.send_data(op.number, &data);
             }
             ChannelOperationKind::Request(req) => {
                 let packet = match req {
@@ -358,6 +447,46 @@ impl ServerChannelsState {
         }
     }
 
+    fn send_data(&mut self, channel_number: ChannelNumber, data: &[u8]) {
+        let channel = self.channel(channel_number).unwrap();
+        let peer = channel.peer_channel;
+
+        let mut chunks = data.chunks(channel.peer_max_packet_size as usize);
+
+        while let Some(data) = chunks.next() {
+            let channel = self.channel(channel_number).unwrap();
+            let remaining_window_space_after =
+                channel.peer_window_size.checked_sub(data.len() as u32);
+            match remaining_window_space_after {
+                None => {
+                    let rest = channel.peer_window_size;
+                    let (to_send, to_keep) = data.split_at(rest as usize);
+
+                    // Send everything we can, which empties the window.
+                    channel.peer_window_size -= rest;
+                    assert_eq!(channel.peer_window_size, 0);
+                    self.packets_to_send
+                        .push_back(Packet::new_msg_channel_data(peer, to_send));
+
+                    // It's over, we have exhausted all window space.
+                    // Queue the rest of the bytes.
+                    let channel = self.channel(channel_number).unwrap();
+                    channel.queued_data.extend_from_slice(to_keep);
+                    for data in chunks {
+                        channel.queued_data.extend_from_slice(data);
+                    }
+                    debug!(channel = %channel_number, queue_len = %channel.queued_data.len(), "Exhausted window space, queueing the rest of the data");
+                    return;
+                }
+                Some(space) => channel.peer_window_size = space,
+            }
+            trace!(channel = %channel_number, window = %channel.peer_window_size, "Remaining window on their side");
+
+            self.packets_to_send
+                .push_back(Packet::new_msg_channel_data(peer, data));
+        }
+    }
+
     fn send_channel_success(&mut self, recipient_channel: u32) {
         self.packets_to_send
             .push_back(Packet::new_msg_channel_success(recipient_channel));
@@ -379,5 +508,46 @@ impl ServerChannelsState {
         self.channels
             .get_mut(&number)
             .ok_or_else(|| client_error!("unknown channel: {number:?}"))
+    }
+}
+
+impl ChannelOperation {
+    /// Logs the attempted operation.
+    fn trace(&self) {
+        let kind = match &self.kind {
+            ChannelOperationKind::Success => "success",
+            ChannelOperationKind::Failure => "failure",
+            ChannelOperationKind::Data(_) => "data",
+            ChannelOperationKind::Request(req) => match req {
+                ChannelRequest::PtyReq { .. } => "pty-req",
+                ChannelRequest::Shell { .. } => "shell",
+                ChannelRequest::Exec { .. } => "exec",
+                ChannelRequest::Env { .. } => "env",
+                ChannelRequest::ExitStatus { .. } => "exit-status",
+            },
+            ChannelOperationKind::Eof => "eof",
+            ChannelOperationKind::Close => "close",
+        };
+        trace!(number = %self.number, %kind, "Attempt channel operation")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ssh_transport::packet::Packet;
+
+    use crate::ServerChannelsState;
+
+    #[test]
+    fn only_single_close_for_double_close_operation() {
+        let state = ServerChannelsState::new();
+        //state.recv_packet();
+    }
+
+    #[test]
+    #[should_panic]
+    fn panic_when_data_operation_after_close() {
+        let state = ServerChannelsState::new();
+        //state.recv_packet();
     }
 }
