@@ -141,21 +141,6 @@ async fn handle_connection(
                             }
                         }
                         ChannelRequest::Shell { want_reply } => {
-                            state.do_operation(
-                                update.number.construct_op(ChannelOperationKind::Data(
-                                    vec![b'a'; 1_000_000],
-                                )),
-                            );
-                            state.do_operation(
-                                update.number.construct_op(ChannelOperationKind::Data(
-                                    vec![b'b'; 1_000_000],
-                                )),
-                            );
-                            state.do_operation(
-                                update.number.construct_op(ChannelOperationKind::Data(
-                                    vec![b'c'; 1_000_000],
-                                )),
-                            );
                             if want_reply {
                                 state.do_operation(success);
                             }
@@ -191,11 +176,14 @@ async fn handle_connection(
                     };
                 }
                 ChannelUpdateKind::Data { data } => {
-                    let is_eof = data.contains(&0x03 /*EOF, Ctrl-C*/);
+                    let is_eof = data.contains(&0x04 /*EOF, Ctrl-D*/);
 
                     // echo :3
-                    // state
-                    //    .do_operation(update.number.construct_op(ChannelOperationKind::Data(data)));
+                    state.do_operation(
+                        update
+                            .number
+                            .construct_op(ChannelOperationKind::Data(data.clone())),
+                    );
 
                     // arbitrary limit
                     if total_sent_data.len() < 50_000 {
@@ -204,15 +192,16 @@ async fn handle_connection(
                         info!(channel = %update.number, "Reached stdin limit");
                         state.do_operation(
                             update.number.construct_op(ChannelOperationKind::Data(
-                                b"Thanks Hayley!".to_vec(),
+                                b"Thanks Hayley!\n".to_vec(),
                             )),
                         );
-                        //state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
+                        state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
                     }
 
-                    if false && is_eof {
-                        debug!(channel = %update.number, "Received Ctrl-C, closing channel");
+                    if is_eof {
+                        debug!(channel = %update.number, "Received Ctrl-D, closing channel");
 
+                        state.do_operation(update.number.construct_op(ChannelOperationKind::Eof));
                         state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
                     }
                 }
