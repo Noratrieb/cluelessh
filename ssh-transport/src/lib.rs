@@ -196,18 +196,19 @@ impl ServerConnection {
                         hostkey_algorithms.find(kex.server_host_key_algorithms.0)?;
                     debug!(name = %server_host_key_algorithm.name(), "Using host key algorithm");
 
+                    // TODO: Implement aes128-ctr
+                    let _ = crypto::encrypt::ENC_AES128_CTR;
+
                     let encryption_algorithms_client_to_server = AlgorithmNegotiation {
                         supported: vec![
                             crypto::encrypt::CHACHA20POLY1305,
                             crypto::encrypt::AES256_GCM,
-                            // crypto::encrypt::ENC_AES128_CTR,
                         ],
                     };
                     let encryption_algorithms_server_to_client = AlgorithmNegotiation {
                         supported: vec![
                             crypto::encrypt::CHACHA20POLY1305,
                             crypto::encrypt::AES256_GCM,
-                            // crypto::encrypt::ENC_AES128_CTR,
                         ],
                     };
 

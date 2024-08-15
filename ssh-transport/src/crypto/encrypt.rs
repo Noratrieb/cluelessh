@@ -51,8 +51,14 @@ pub const ENC_AES128_CTR: EncryptionAlgorithm = EncryptionAlgorithm {
         let mut alg = Aes128Ctr::from_state(state);
         alg.decrypt_len(bytes, packet_number)
     },
-    decrypt_packet: |state, bytes, packet_number| todo!(),
-    encrypt_packet: |state, packet, packet_number| todo!(),
+    decrypt_packet: |state, bytes, packet_number| {
+        let mut state = Aes128Ctr::from_state(state);
+        state.decrypt_packet(bytes, packet_number)
+    },
+    encrypt_packet: |state, packet, packet_number| {
+        let mut state = Aes128Ctr::from_state(state);
+        state.encrypt_packet(packet, packet_number)
+    },
 };
 
 /// `chacha20-poly1305@openssh.com` uses a 64-bit nonce, not the 96-bit one in the IETF version.
@@ -229,21 +235,19 @@ impl<'a> Aes256GcmOpenSsh<'a> {
 }
 
 struct Aes128Ctr {
-    key: ctr::Ctr128BE<aes::Aes128>,
+    _key: ctr::Ctr128BE<aes::Aes128>,
 }
 impl Aes128Ctr {
-    fn from_state(keys: &mut [u8]) -> Self {
+    fn from_state(_keys: &mut [u8]) -> Self {
         todo!()
     }
 
-    fn decrypt_len(&mut self, _: &mut [u8], _: u64) {
-        
-    }
+    fn decrypt_len(&mut self, _: &mut [u8], _: u64) {}
 
-    fn decrypt_packet(&mut self, mut bytes: RawPacket, _packet_number: u64) -> Result<Packet> {
+    fn decrypt_packet(&mut self, _bytes: RawPacket, _packet_number: u64) -> Result<Packet> {
         todo!()
     }
-    fn encrypt_packet(&mut self, packet: Packet, _packet_number: u64) -> EncryptedPacket {
+    fn encrypt_packet(&mut self, _packet: Packet, _packet_number: u64) -> EncryptedPacket {
         todo!()
     }
 }
