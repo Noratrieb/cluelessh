@@ -326,6 +326,7 @@ version = "0.1.0"
 dependencies = [
  "eyre",
  "hex-literal",
+ "rand",
  "ssh-protocol",
  "tokio",
  "tracing",
@@ -937,7 +938,6 @@ dependencies = [
  "hex-literal",
  "p256",
  "poly1305",
- "rand",
  "rand_core",
  "sha2",
  "subtle",

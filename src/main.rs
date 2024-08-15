@@ -1,6 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use eyre::{Context, Result};
+use rand::RngCore;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -9,10 +10,17 @@ use tracing::{debug, error, info, info_span, Instrument};
 
 use ssh_protocol::{
     connection::{ChannelOpen, ChannelOperationKind, ChannelRequest},
-    transport::{self, ThreadRngRand},
+    transport::{self},
     ChannelUpdateKind, ServerConnection, SshStatus,
 };
 use tracing_subscriber::EnvFilter;
+
+struct ThreadRngRand;
+impl ssh_protocol::transport::SshRng for ThreadRngRand {
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        rand::thread_rng().fill_bytes(dest);
+    }
+}
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -190,11 +198,9 @@ async fn handle_connection(
                         total_sent_data.extend_from_slice(&data);
                     } else {
                         info!(channel = %update.number, "Reached stdin limit");
-                        state.do_operation(
-                            update.number.construct_op(ChannelOperationKind::Data(
-                                b"Thanks Hayley!\n".to_vec(),
-                            )),
-                        );
+                        state.do_operation(update.number.construct_op(ChannelOperationKind::Data(
+                            b"Thanks Hayley!\n".to_vec(),
+                        )));
                         state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
                     }
 

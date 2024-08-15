@@ -9,7 +9,6 @@ use std::{collections::VecDeque, mem::take};
 use crypto::{AlgorithmName, AlgorithmNegotiation, EncryptionAlgorithm, HostKeySigningAlgorithm};
 use packet::{KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport};
 use parse::{NameList, Parser, Writer};
-use rand::RngCore;
 use sha2::Digest;
 use tracing::{debug, info, trace};
 
@@ -79,8 +78,8 @@ pub trait SshRng {
     fn fill_bytes(&mut self, dest: &mut [u8]);
 }
 struct SshRngRandAdapter<'a>(&'a mut dyn SshRng);
-impl rand::CryptoRng for SshRngRandAdapter<'_> {}
-impl rand::RngCore for SshRngRandAdapter<'_> {
+impl rand_core::CryptoRng for SshRngRandAdapter<'_> {}
+impl rand_core::RngCore for SshRngRandAdapter<'_> {
     fn next_u32(&mut self) -> u32 {
         self.next_u64() as u32
     }
@@ -93,16 +92,9 @@ impl rand::RngCore for SshRngRandAdapter<'_> {
         self.0.fill_bytes(dest);
     }
 
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), rand::Error> {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), rand_core::Error> {
         self.fill_bytes(dest);
         Ok(())
-    }
-}
-
-pub struct ThreadRngRand;
-impl SshRng for ThreadRngRand {
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        rand::thread_rng().fill_bytes(dest);
     }
 }
 
