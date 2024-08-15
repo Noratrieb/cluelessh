@@ -916,6 +916,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssh"
+version = "0.1.0"
+
+[[package]]
 name = "ssh-connection"
 version = "0.1.0"
 dependencies = [

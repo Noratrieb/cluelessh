@@ -1,5 +1,5 @@
 [workspace]
-members = ["fakesshd", "ssh-connection", "ssh-protocol", "ssh-transport"]
+members = ["fakesshd", "ssh", "ssh-connection", "ssh-protocol", "ssh-transport"]
 resolver = "2"
 
 [workspace.dependencies]

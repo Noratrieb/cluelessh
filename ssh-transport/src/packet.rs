@@ -24,7 +24,7 @@ pub struct Msg(pub(crate) MsgKind);
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum MsgKind {
-    ServerProtocolInfo,
+    ServerProtocolInfo(Vec<u8>),
     PlaintextPacket(Packet),
     EncryptedPacket(EncryptedPacket),
 }
@@ -32,7 +32,7 @@ pub(crate) enum MsgKind {
 impl Msg {
     pub fn to_bytes(self) -> Vec<u8> {
         match self.0 {
-            MsgKind::ServerProtocolInfo => crate::SERVER_IDENTIFICATION.to_vec(),
+            MsgKind::ServerProtocolInfo(v) => v,
             MsgKind::PlaintextPacket(v) => v.to_bytes(true, Packet::DEFAULT_BLOCK_SIZE),
             MsgKind::EncryptedPacket(v) => v.into_bytes(),
         }
@@ -85,8 +85,8 @@ impl PacketTransport {
         self.queue_send_msg(msg);
     }
 
-    pub(crate) fn queue_send_protocol_info(&mut self) {
-        self.queue_send_msg(Msg(MsgKind::ServerProtocolInfo));
+    pub(crate) fn queue_send_protocol_info(&mut self, identification: Vec<u8>) {
+        self.queue_send_msg(Msg(MsgKind::ServerProtocolInfo(identification)));
     }
 
     pub(crate) fn recv_next_packet(&mut self) -> Option<Packet> {

@@ -5,7 +5,7 @@ pub use ssh_transport as transport;
 pub use ssh_transport::{Result, SshStatus};
 
 pub struct ServerConnection {
-    transport: ssh_transport::ServerConnection,
+    transport: ssh_transport::server::ServerConnection,
     state: ServerConnectionState,
 }
 
@@ -15,7 +15,7 @@ enum ServerConnectionState {
 }
 
 impl ServerConnection {
-    pub fn new(transport: ssh_transport::ServerConnection) -> Self {
+    pub fn new(transport: ssh_transport::server::ServerConnection) -> Self {
         Self {
             transport,
             state: ServerConnectionState::Auth(auth::BadAuth::new()),

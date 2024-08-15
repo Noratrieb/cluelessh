@@ -101,7 +101,7 @@ async fn handle_connection(
         }
     }*/
 
-    let mut state = ServerConnection::new(transport::ServerConnection::new(ThreadRngRand));
+    let mut state = ServerConnection::new(transport::server::ServerConnection::new(ThreadRngRand));
 
     let mut session_channels = HashMap::new();
 
