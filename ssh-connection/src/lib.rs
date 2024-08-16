@@ -311,6 +311,10 @@ impl ChannelsState {
 
                 let channel_request = match request_type {
                     "pty-req" => {
+                        if !self.is_server {
+                            return Err(peer_error!("server tried to open pty"));
+                        }
+
                         let term = packet.utf8_string()?;
                         let width_chars = packet.u32()?;
                         let height_rows = packet.u32()?;
@@ -337,10 +341,18 @@ impl ChannelsState {
                         }
                     }
                     "shell" => {
+                        if !self.is_server {
+                            return Err(peer_error!("server tried to open shell"));
+                        }
+
                         info!(channel = %our_channel, "Opening shell");
                         ChannelRequest::Shell { want_reply }
                     }
                     "exec" => {
+                        if !self.is_server {
+                            return Err(peer_error!("server tried to execute command"));
+                        }
+
                         let command = packet.string()?;
                         info!(channel = %our_channel, command = %String::from_utf8_lossy(command), "Executing command");
                         ChannelRequest::Exec {
@@ -349,6 +361,10 @@ impl ChannelsState {
                         }
                     }
                     "env" => {
+                        if !self.is_server {
+                            return Err(peer_error!("server tried to set environment var"));
+                        }
+
                         let name = packet.utf8_string()?;
                         let value = packet.string()?;
 
@@ -361,6 +377,10 @@ impl ChannelsState {
                         }
                     }
                     "signal" => {
+                        if !self.is_server {
+                            return Err(peer_error!("server tried to send signal"));
+                        }
+
                         debug!(channel = %our_channel, "Received signal");
                         // Ignore signals, something we can do.
                         return Ok(());

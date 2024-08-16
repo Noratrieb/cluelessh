@@ -153,6 +153,10 @@ impl ClientConnection {
         }
     }
 
+    pub fn is_open(&self) -> bool {
+        matches!(self.state, ClientConnectionState::Open(_))
+    }
+
     pub fn next_msg_to_send(&mut self) -> Option<ssh_transport::Msg> {
         self.transport.next_msg_to_send()
     }
