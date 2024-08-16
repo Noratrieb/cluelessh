@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use clap::Parser;
 
 use eyre::Context;
@@ -6,7 +8,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
-use tracing::info;
+use tracing::{debug, error, info};
 
 use ssh_protocol::{
     transport::{self},
@@ -29,6 +31,10 @@ struct Args {
     command: Vec<String>,
 }
 
+enum Operation {
+    PasswordEntered(std::io::Result<String>),
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
@@ -40,7 +46,14 @@ async fn main() -> eyre::Result<()> {
         .await
         .wrap_err("connecting")?;
 
-    let mut state = transport::client::ClientConnection::new(ThreadRngRand);
+    let username = "hans-peter";
+
+    let mut state = ssh_protocol::ClientConnection::new(
+        transport::client::ClientConnection::new(ThreadRngRand),
+        ssh_protocol::auth::ClientAuth::new(username.as_bytes().to_vec()),
+    );
+
+    let (send_op, mut recv_op) = tokio::sync::mpsc::channel::<Operation>(10);
 
     let mut buf = [0; 1024];
 
@@ -51,25 +64,61 @@ async fn main() -> eyre::Result<()> {
                 .wrap_err("writing response")?;
         }
 
-        let read = conn
-            .read(&mut buf)
-            .await
-            .wrap_err("reading from connection")?;
-        if read == 0 {
-            info!("Did not read any bytes from TCP stream, EOF");
-            return Ok(());
+        if let Some(auth) = state.auth() {
+            for req in auth.user_requests() {
+                match req {
+                    ssh_protocol::auth::ClientUserRequest::Password => {
+                        let username = username.to_owned();
+                        let destination = args.destination.clone();
+                        let send_op = send_op.clone();
+                        std::thread::spawn(move || {
+                            let password = rpassword::prompt_password(format!(
+                                "{}@{}'s password: ",
+                                username, destination
+                            ));
+                            let _ = send_op.blocking_send(Operation::PasswordEntered(password));
+                        });
+                    }
+                    ssh_protocol::auth::ClientUserRequest::Banner(banner) => {
+                        let banner = String::from_utf8_lossy(&banner);
+                        std::io::stdout().write(&banner.as_bytes())?;
+                    }
+                }
+            }
         }
 
-        if let Err(err) = state.recv_bytes(&buf[..read]) {
-            match err {
-                SshStatus::PeerError(err) => {
-                    info!(?err, "disconnecting client after invalid operation");
+        tokio::select! {
+            read = conn.read(&mut buf) => {
+                let read = read.wrap_err("reading from connection")?;
+                if read == 0 {
+                    info!("Did not read any bytes from TCP stream, EOF");
                     return Ok(());
                 }
-                SshStatus::Disconnect => {
-                    info!("Received disconnect from client");
-                    return Ok(());
+                if let Err(err) = state.recv_bytes(&buf[..read]) {
+                    match err {
+                        SshStatus::PeerError(err) => {
+                            error!(?err, "disconnecting client after invalid operation");
+                            return Ok(());
+                        }
+                        SshStatus::Disconnect => {
+                            error!("Received disconnect from server");
+                            return Ok(());
+                        }
+                    }
                 }
+            }
+            op = recv_op.recv() => {
+                match op {
+                    Some(Operation::PasswordEntered(password)) => {
+                        if let Some(auth) = state.auth() {
+                            auth.send_password(&password?);
+                        } else {
+                            debug!("Ignoring entered password as the state has moved on");
+                        }
+                    }
+                    None => {}
+                }
+                state.progress();
             }
         }
     }

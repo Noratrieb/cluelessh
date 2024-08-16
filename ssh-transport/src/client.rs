@@ -304,6 +304,18 @@ impl ClientConnection {
         self.packet_transport.next_msg_to_send()
     }
 
+    pub fn next_plaintext_packet(&mut self) -> Option<Packet> {
+        self.plaintext_packets.pop_front()
+    }
+
+    pub fn send_plaintext_packet(&mut self, packet: Packet) {
+        self.packet_transport.queue_packet(packet);
+    }
+
+    pub fn is_open(&self) -> bool {
+        matches!(self.state, ClientState::Open)
+    }
+
     fn send_kexinit(&mut self, client_ident: Vec<u8>, server_ident: Vec<u8>) {
         let mut cookie = [0; 16];
         self.rng.fill_bytes(&mut cookie);

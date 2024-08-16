@@ -63,6 +63,18 @@ ctors! {
     // User authentication protocol:
 
     // 50 to 59   User authentication generic
+    fn new_msg_userauth_request_none(SSH_MSG_USERAUTH_REQUEST;
+        username: string,
+        service_name: string,
+        method_name_none: string,
+    );
+    fn new_msg_userauth_request_password(SSH_MSG_USERAUTH_REQUEST;
+        username: string,
+        service_name: string,
+        method_name_password: string,
+        false_: bool,
+        password: string,
+    );
     fn new_msg_userauth_failure(SSH_MSG_USERAUTH_FAILURE;
         auth_options: name_list,
         partial_success: bool,

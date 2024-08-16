@@ -16,12 +16,14 @@ impl std::fmt::Display for ChannelNumber {
     }
 }
 
-pub struct ServerChannelsState {
+pub struct ChannelsState {
     packets_to_send: VecDeque<Packet>,
     channel_updates: VecDeque<ChannelUpdate>,
 
     channels: HashMap<ChannelNumber, Channel>,
     next_channel_id: ChannelNumber,
+
+    is_server: bool,
 }
 
 struct Channel {
@@ -121,13 +123,15 @@ pub enum ChannelOperationKind {
     Close,
 }
 
-impl ServerChannelsState {
-    pub fn new() -> Self {
-        ServerChannelsState {
+impl ChannelsState {
+    pub fn new(is_server: bool) -> Self {
+        ChannelsState {
             packets_to_send: VecDeque::new(),
             channels: HashMap::new(),
             channel_updates: VecDeque::new(),
             next_channel_id: ChannelNumber(0),
+
+            is_server,
         }
     }
 
@@ -549,7 +553,7 @@ impl ChannelOperation {
 mod tests {
     use ssh_transport::{numbers, packet::Packet};
 
-    use crate::{ChannelNumber, ChannelOperation, ChannelOperationKind, ServerChannelsState};
+    use crate::{ChannelNumber, ChannelOperation, ChannelOperationKind, ChannelsState};
 
     /// If a test fails, add this to the test to get logs.
     #[allow(dead_code)]
@@ -560,7 +564,7 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_response_types(state: &mut ServerChannelsState, types: &[u8]) {
+    fn assert_response_types(state: &mut ChannelsState, types: &[u8]) {
         let response = state
             .packets_to_send()
             .map(|p| numbers::packet_type_to_string(p.packet_type()))
@@ -573,7 +577,7 @@ mod tests {
         assert_eq!(expected, response);
     }
 
-    fn open_session_channel(state: &mut ServerChannelsState) {
+    fn open_session_channel(state: &mut ChannelsState) {
         state
             .recv_packet(Packet::new_msg_channel_open_session(
                 b"session", 0, 2048, 1024,
@@ -584,7 +588,7 @@ mod tests {
 
     #[test]
     fn interactive_pty() {
-        let state = &mut ServerChannelsState::new();
+        let state = &mut ChannelsState::new(true);
         open_session_channel(state);
 
         state
@@ -615,7 +619,7 @@ mod tests {
 
     #[test]
     fn only_single_close_for_double_close_operation() {
-        let state = &mut ServerChannelsState::new();
+        let state = &mut ChannelsState::new(true);
         open_session_channel(state);
         state.do_operation(ChannelOperation {
             number: ChannelNumber(0),
@@ -630,7 +634,7 @@ mod tests {
 
     #[test]
     fn ignore_operation_after_close() {
-        let mut state = &mut ServerChannelsState::new();
+        let mut state = &mut ChannelsState::new(true);
         open_session_channel(state);
         state.recv_packet(Packet::new_msg_channel_close(0)).unwrap();
         assert_response_types(&mut state, &[numbers::SSH_MSG_CHANNEL_CLOSE]);
@@ -643,7 +647,7 @@ mod tests {
 
     #[test]
     fn respect_peer_windowing() {
-        let state = &mut ServerChannelsState::new();
+        let state = &mut ChannelsState::new(true);
         state
             .recv_packet(Packet::new_msg_channel_open_session(b"session", 0, 10, 50))
             .unwrap();
@@ -684,7 +688,7 @@ mod tests {
 
     #[test]
     fn send_windowing_adjustments() {
-        let state = &mut ServerChannelsState::new();
+        let state = &mut ChannelsState::new(true);
         state
             .recv_packet(Packet::new_msg_channel_open_session(
                 b"session", 0, 2000, 2000,
