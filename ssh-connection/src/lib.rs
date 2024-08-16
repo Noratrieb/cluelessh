@@ -417,9 +417,7 @@ impl ChannelsState {
     }
 
     /// Executes an operation on the channel.
-    ///
-    /// # Panics
-    /// This will panic when the channel has already been closed.
+    /// If the channel has already been closed, the operation is dropped.
     pub fn do_operation(&mut self, op: ChannelOperation) {
         op.trace();
 
