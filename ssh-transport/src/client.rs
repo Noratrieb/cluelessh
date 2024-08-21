@@ -19,6 +19,8 @@ pub struct ClientConnection {
     rng: Box<dyn SshRng + Send + Sync>,
 
     plaintext_packets: VecDeque<Packet>,
+
+    pub abort_for_dos: bool,
 }
 
 enum ClientState {
@@ -67,6 +69,7 @@ impl ClientConnection {
             rng: Box::new(rng),
 
             plaintext_packets: VecDeque::new(),
+            abort_for_dos: false,
         }
     }
 
@@ -213,6 +216,10 @@ impl ClientConnection {
                             "expected SSH_MSG_KEX_ECDH_REPLY, found {}",
                             numbers::packet_type_to_string(packet_type)
                         ));
+                    }
+
+                    if self.abort_for_dos {
+                        return Err(peer_error!("early abort"));
                     }
 
                     let server_hostkey = dh.string()?;
