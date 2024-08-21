@@ -276,10 +276,10 @@ impl SupportedAlgorithms {
                 supported: vec![encrypt::CHACHA20POLY1305, encrypt::AES256_GCM],
             },
             mac_to_peer: AlgorithmNegotiation {
-                supported: vec!["hmac-sha2-256"],
+                supported: vec!["hmac-sha2-256", "hmac-sha2-256-etm@openssh.com"],
             },
             mac_from_peer: AlgorithmNegotiation {
-                supported: vec!["hmac-sha2-256"],
+                supported: vec!["hmac-sha2-256", "hmac-sha2-256-etm@openssh.com"],
             },
             compression_to_peer: AlgorithmNegotiation {
                 supported: vec!["none"],
