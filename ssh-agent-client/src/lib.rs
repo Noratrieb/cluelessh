@@ -9,6 +9,11 @@ use tracing::{debug, trace};
 
 /// A message to send to the byte stream.
 pub enum Request {
+    AddIdentity {
+        key_type: String,
+        key_contents: Vec<u8>,
+        key_comment: String,
+    },
     RemoveAllIdentities,
     ListIdentities,
     Sign {
@@ -33,6 +38,16 @@ impl Request {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut p = Writer::new();
         match self {
+            Self::AddIdentity {
+                key_type,
+                key_contents,
+                key_comment,
+            } => {
+                p.u8(numbers::SSH_AGENTC_ADD_IDENTITY);
+                p.string(key_type.as_bytes());
+                p.write(&key_contents);
+                p.string(key_comment.as_bytes());
+            }
             Self::RemoveAllIdentities => p.u8(numbers::SSH_AGENTC_REMOVE_ALL_IDENTITIES),
             Self::ListIdentities => p.u8(numbers::SSH_AGENTC_REQUEST_IDENTITIES),
             Self::Sign {
@@ -210,6 +225,21 @@ impl SocketAgentConnection {
             conn: AgentConnection::new(),
             uds: socket,
         })
+    }
+
+    pub async fn add_identitity(
+        &mut self,
+        key_type: &str,
+        key_contents: &[u8],
+        key_comment: &str,
+    ) -> eyre::Result<()> {
+        self.send(Request::AddIdentity {
+            key_type: key_type.to_owned(),
+            key_contents: key_contents.to_owned(),
+            key_comment: key_comment.to_owned(),
+        })
+        .await?;
+        self.generic_response().await
     }
 
     pub async fn remove_all_identities(&mut self) -> eyre::Result<()> {

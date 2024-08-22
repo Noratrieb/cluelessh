@@ -13,6 +13,11 @@ struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Subcommand {
+    /// Add a new identity to the agent, SSH_AGENTC_ADD_IDENTITY
+    AddIdentity {
+        /// The path to the private key file
+        identity: PathBuf,
+    },
     /// Remove all identities from the agent, SSH_AGENTC_REMOVE_ALL_IDENTITIES
     RemoveAllIdentities,
     /// List all identities in the agent, SSH_AGENTC_REQUEST_IDENTITIES
@@ -46,6 +51,12 @@ async fn main() -> eyre::Result<()> {
     let mut agent = ssh_agent_client::SocketAgentConnection::from_env().await?;
 
     match args.command {
+        Subcommand::AddIdentity { identity } => {
+            let file = std::fs::read(&identity)
+                .wrap_err_with(|| format!("reading file {}", identity.display()))?;
+            let _ = file;
+            todo!("we need to parse and decrypt the key...")
+        }
         Subcommand::RemoveAllIdentities => {
             agent.remove_all_identities().await?;
             println!("Removed all identities from the agent");
