@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{io::Write, path::PathBuf};
 
 use clap::Parser;
 use eyre::{bail, Context};
@@ -97,6 +97,9 @@ async fn main() -> eyre::Result<()> {
             };
 
             let signature = agent.sign(&key.key_blob, &file, 0).await?;
+
+            let signature = pem::encode(&pem::Pem::new("SSH SIGNATURE", signature));
+            std::io::stdout().write_all(signature.as_bytes())?;
         }
         Subcommand::Lock => {
             let passphrase =

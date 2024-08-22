@@ -14,3 +14,4 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 rpassword = "7.3.1"
 sha2 = "0.10.8"
 hex = "0.4.3"
+pem = "3.0.4"
