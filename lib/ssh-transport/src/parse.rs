@@ -28,6 +28,10 @@ impl<'a> Parser<'a> {
         Self(data)
     }
 
+    pub fn remaining(&self) -> &[u8] {
+        &self.0
+    }
+
     pub fn has_data(&self) -> bool {
         !self.0.is_empty()
     }
@@ -45,7 +49,10 @@ impl<'a> Parser<'a> {
     pub fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         assert!(N < 100_000);
         if self.0.len() < N {
-            return Err(ParseError(format!("packet too short")));
+            return Err(ParseError(format!(
+                "packet too short, expected {N} but found {}",
+                self.0.len()
+            )));
         }
         let result = self.0[..N].try_into().unwrap();
         self.0 = &self.0[N..];
@@ -54,7 +61,10 @@ impl<'a> Parser<'a> {
 
     pub fn slice(&mut self, len: usize) -> Result<&'a [u8]> {
         if self.0.len() < len {
-            return Err(ParseError(format!("packet too short")));
+            return Err(ParseError(format!(
+                "packet too short, expected {len} but found {}",
+                self.0.len()
+            )));
         }
         if len > 100_000 {
             return Err(ParseError(format!("bytes too long: {len}")));

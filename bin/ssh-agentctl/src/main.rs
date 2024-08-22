@@ -3,7 +3,7 @@ use std::{io::Write, path::PathBuf};
 use clap::Parser;
 use eyre::{bail, Context};
 use ssh_agent_client::{IdentityAnswer, SocketAgentConnection};
-use ssh_transport::key::SshPubkey;
+use ssh_transport::key::PublicKey;
 
 #[derive(clap::Parser, Debug)]
 struct Args {
@@ -109,6 +109,7 @@ async fn main() -> eyre::Result<()> {
 
             let signature = agent.sign(&key.key_blob, &file, 0).await?;
 
+            // TODO: https://github.com/openssh/openssh-portable/blob/a76a6b85108e3032c8175611ecc5746e7131f876/PROTOCOL.sshsig
             let signature = pem::encode(&pem::Pem::new("SSH SIGNATURE", signature));
             std::io::stdout().write_all(signature.as_bytes())?;
         }
@@ -148,7 +149,7 @@ async fn list_ids(agent: &mut SocketAgentConnection, print_key_id: bool) -> eyre
 }
 
 fn print_key(id: IdentityAnswer, show_key_id: bool) {
-    let key = SshPubkey::from_wire_encoding(&id.key_blob);
+    let key = PublicKey::from_wire_encoding(&id.key_blob);
     match key {
         Ok(key) => {
             if show_key_id {

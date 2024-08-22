@@ -1,16 +1,19 @@
 //! Operations on SSH keys.
 
+// <https://datatracker.ietf.org/doc/html/rfc4716> exists but is kinda weird
+
 use std::fmt::Display;
 
 use base64::Engine;
 
 use crate::parse::{self, ParseError, Parser, Writer};
 
-pub enum SshPubkey {
+#[derive(Debug, Clone)]
+pub enum PublicKey {
     Ed25519 { public_key: [u8; 32] },
 }
 
-impl SshPubkey {
+impl PublicKey {
     /// Parses an SSH public key from its wire encoding as specified in
     /// RFC4253, RFC5656, and RFC8709.
     pub fn from_wire_encoding(bytes: &[u8]) -> parse::Result<Self> {
@@ -43,7 +46,7 @@ impl SshPubkey {
     }
 }
 
-impl Display for SshPubkey {
+impl Display for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ed25519 { .. } => {
