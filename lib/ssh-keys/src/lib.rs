@@ -101,7 +101,7 @@ impl EncryptedPrivateKeys {
             self.cipher.decrypt_in_place(&mut data, &key, &iv);
         }
 
-        let mut p = Parser::new(&self.encrypted_private_keys);
+        let mut p = Parser::new(&data);
         let checkint1 = p.u32()?;
         let checkint2 = p.u32()?;
         if checkint1 != checkint2 {
@@ -183,7 +183,7 @@ mod tests {
 
     // ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHPaiIO6MePXM/QCJWVge1k4dsiefPr4taP9VJbCtXdx uwu
     // Password: 'test'
-    const _TEST_ED25519_AES256_CTR: &[u8] = b"-----BEGIN OPENSSH PRIVATE KEY-----
+    const TEST_ED25519_AES256_CTR: &[u8] = b"-----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABA5S8LoGs
 SYFE1uIAlgK4I/AAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIHPaiIO6MePXM/QC
 JWVge1k4dsiefPr4taP9VJbCtXdxAAAAkB9StlI/JgwhtvDGx7v08RAa76W6aXSgbDJTU/
@@ -205,13 +205,27 @@ zukcSwhnKrg+wzw7/JZQAAAAA3V3dQEC
 ";
 
     #[test]
-    fn unencrypted_ed25519() {
+    fn ed25519_none() {
         let keys = EncryptedPrivateKeys::parse_unencrypted(TEST_ED25519_NONE).unwrap();
         assert_eq!(keys.public_keys.len(), 1);
         assert_eq!(keys.cipher, Cipher::None);
         assert_eq!(keys.kdf, Kdf::None);
 
         let decrypted = keys.parse_private(None).unwrap();
+        assert_eq!(decrypted.len(), 1);
+        let key = decrypted.first().unwrap();
+        assert_eq!(key.comment, "uwu");
+        assert!(matches!(key.private_key, PrivateKeyType::Ed25519 { .. }));
+    }
+
+    #[test]
+    fn ed25519_aes256ctr() {
+        let keys = EncryptedPrivateKeys::parse_unencrypted(TEST_ED25519_AES256_CTR).unwrap();
+        assert_eq!(keys.public_keys.len(), 1);
+        assert_eq!(keys.cipher, Cipher::Aes256Ctr);
+        assert!(matches!(keys.kdf, Kdf::BCrypt { .. }));
+
+        let decrypted = keys.parse_private(Some("test")).unwrap();
         assert_eq!(decrypted.len(), 1);
         let key = decrypted.first().unwrap();
         assert_eq!(key.comment, "uwu");
