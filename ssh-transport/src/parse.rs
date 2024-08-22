@@ -1,7 +1,24 @@
 use core::str;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 
-use crate::Result;
+use crate::SshStatus;
+
+#[derive(Debug)]
+pub struct ParseError(pub String);
+impl Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ParseError {}
+
+impl From<ParseError> for SshStatus {
+    fn from(err: ParseError) -> Self {
+        Self::PeerError(err.0)
+    }
+}
+
+pub type Result<T, E = ParseError> = std::result::Result<T, E>;
 
 /// A simplified `byteorder` clone that emits client errors when the data is too short.
 pub struct Parser<'a>(&'a [u8]);
@@ -9,6 +26,10 @@ pub struct Parser<'a>(&'a [u8]);
 impl<'a> Parser<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         Self(data)
+    }
+
+    pub fn has_data(&self) -> bool {
+        !self.0.is_empty()
     }
 
     pub fn u8(&mut self) -> Result<u8> {
@@ -24,7 +45,7 @@ impl<'a> Parser<'a> {
     pub fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         assert!(N < 100_000);
         if self.0.len() < N {
-            return Err(crate::peer_error!("packet too short"));
+            return Err(ParseError(format!("packet too short")));
         }
         let result = self.0[..N].try_into().unwrap();
         self.0 = &self.0[N..];
@@ -33,10 +54,10 @@ impl<'a> Parser<'a> {
 
     pub fn slice(&mut self, len: usize) -> Result<&'a [u8]> {
         if self.0.len() < len {
-            return Err(crate::peer_error!("packet too short"));
+            return Err(ParseError(format!("packet too short")));
         }
         if len > 100_000 {
-            return Err(crate::peer_error!("bytes too long: {len}"));
+            return Err(ParseError(format!("bytes too long: {len}")));
         }
         let result = &self.0[..len];
         self.0 = &self.0[len..];
@@ -48,7 +69,7 @@ impl<'a> Parser<'a> {
         match b {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(crate::peer_error!("invalid bool: {b}")),
+            _ => Err(ParseError(format!("invalid bool: {b}"))),
         }
     }
 
@@ -70,7 +91,7 @@ impl<'a> Parser<'a> {
     pub fn utf8_string(&mut self) -> Result<&'a str> {
         let s = self.string()?;
         let Ok(s) = str::from_utf8(s) else {
-            return Err(crate::peer_error!("name-list is invalid UTF-8"));
+            return Err(ParseError(format!("name-list is invalid UTF-8")));
         };
         Ok(s)
     }
@@ -165,7 +186,7 @@ impl<'a> NameList<'a> {
 
 impl Debug for NameList<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        Debug::fmt(&self.0, f)
     }
 }
 

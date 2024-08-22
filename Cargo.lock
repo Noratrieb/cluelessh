@@ -138,6 +138,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "base64ct"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -208,9 +214,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.15"
+version = "4.5.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11d8838454fda655dafd3accb2b6e2bea645b9e4078abe84a22ceb947235c5cc"
+checksum = "ed6719fffa43d0d87e5fd8caeab59be1554fb028cd30edc88fc4369b17971019"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -596,6 +602,12 @@ name = "hermit-abi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
+
+[[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hex-literal"
@@ -1155,10 +1167,36 @@ dependencies = [
  "eyre",
  "rand",
  "rpassword",
+ "ssh-agent-client",
  "ssh-protocol",
  "ssh-transport",
  "tokio",
  "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "ssh-agent-client"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "ssh-transport",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "ssh-agentctl"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "eyre",
+ "hex",
+ "rpassword",
+ "sha2",
+ "ssh-agent-client",
+ "ssh-transport",
+ "tokio",
  "tracing-subscriber",
 ]
 
@@ -1186,6 +1224,7 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "aes-gcm",
+ "base64",
  "chacha20",
  "crypto-bigint",
  "ctr",
@@ -1251,9 +1290,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.39.2"
+version = "1.39.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daa4fb1bc778bd6f04cbfc4bb2d06a7396a8f299dc33ea1900cedaa316f467b1"
+checksum = "9babc99b9923bfa4804bd74722ff02c0381021eafa4db9949217e3be8e84fff5"
 dependencies = [
  "backtrace",
  "bytes",

@@ -5,7 +5,7 @@ use std::mem;
 
 use tracing::{debug, trace};
 
-use crate::crypto::{EncryptionAlgorithm, Keys, Plaintext, Session};
+use crate::crypto::{self, EncryptionAlgorithm, Keys, Plaintext, Session};
 use crate::parse::{NameList, Parser, Writer};
 use crate::Result;
 use crate::{numbers, peer_error};
@@ -347,19 +347,38 @@ impl RawPacket {
     }
 }
 
-struct PacketParser {
+pub struct PacketParser {
     // The length of the packet.
     packet_length: Option<usize>,
     // The raw data *encrypted*, including the length.
     raw_data: Vec<u8>,
+    done: bool,
 }
 impl PacketParser {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             packet_length: None,
             raw_data: Vec::new(),
+            done: false,
         }
     }
+
+    /// Parse a raw packet body out of a plaintext stream of bytes.
+    /// # Returns
+    /// - `Err()` - if the packet was invalid
+    /// - `Ok(None)` - if the packet is incomplete and needs more data
+    /// - `Ok(Some(consumed, all_data))` if a packet has been parsed.
+    ///   `consumed` is the amount of bytes from `bytes` that were actually consumed,
+    ///   `all_data` is the entire packet including the length.
+    pub fn recv_plaintext_bytes(&mut self, bytes: &[u8]) -> Result<Option<(usize, Vec<u8>)>> {
+        let Some((consumed, data)) = self.recv_bytes_inner(bytes, &mut crypto::Plaintext, 0)?
+        else {
+            return Ok(None);
+        };
+        self.done = true;
+        Ok(Some((consumed, data.raw)))
+    }
+
     fn recv_bytes(
         &mut self,
         bytes: &[u8],
@@ -378,6 +397,11 @@ impl PacketParser {
         keys: &mut dyn Keys,
         next_seq_nr: u64,
     ) -> Result<Option<(usize, RawPacket)>> {
+        assert!(
+            !self.done,
+            "Passed bytes to packet parser even after it was completed"
+        );
+
         let mut consumed = 0;
         let packet_length = match self.packet_length {
             Some(packet_length) => {
@@ -460,7 +484,7 @@ impl ProtocolIdentParser {
             // The peer will not send any more information than this until we respond, so discord the rest of the bytes.
             let peer_ident = mem::take(&mut self.0);
             let peer_ident_string = String::from_utf8_lossy(&peer_ident);
-            debug!(identification = %peer_ident_string, "Peer identifier");
+            debug!(identification = %peer_ident_string.trim(), "Peer identifier");
 
             Some(peer_ident)
         } else {

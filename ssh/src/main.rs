@@ -79,6 +79,18 @@ async fn main() -> eyre::Result<()> {
                             let _ = send_op.blocking_send(Operation::PasswordEntered(password));
                         });
                     }
+                    ssh_protocol::auth::ClientUserRequest::PrivateKeySign {
+                        session_identifier: _,
+                    } => {
+                        // TODO: move
+                        let mut agent = ssh_agent_client::SocketAgentConnection::from_env()
+                            .await
+                            .wrap_err("failed to connect to SSH agent")?;
+                        let identities = agent.list_identities().await?;
+                        for identity in identities {
+                            debug!(comment = ?identity.comment, "Found identity");
+                        }
+                    }
                     ssh_protocol::auth::ClientUserRequest::Banner(banner) => {
                         let banner = String::from_utf8_lossy(&banner);
                         std::io::stdout().write(&banner.as_bytes())?;

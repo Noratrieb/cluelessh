@@ -1,5 +1,6 @@
 pub mod client;
 mod crypto;
+pub mod key;
 pub mod numbers;
 pub mod packet;
 pub mod parse;
@@ -19,7 +20,6 @@ pub enum SshStatus {
 }
 
 pub type Result<T, E = SshStatus> = std::result::Result<T, E>;
-
 
 pub trait SshRng {
     fn fill_bytes(&mut self, dest: &mut [u8]);

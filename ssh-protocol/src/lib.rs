@@ -111,8 +111,9 @@ impl ClientConnection {
         self.transport.recv_bytes(bytes)?;
 
         if let ClientConnectionState::Setup(auth) = &mut self.state {
-            if self.transport.is_open() {
+            if let Some(session_ident) = self.transport.is_open() {
                 let mut auth = mem::take(auth).unwrap();
+                auth.set_session_identifier(session_ident);
                 for to_send in auth.packets_to_send() {
                     self.transport.send_plaintext_packet(to_send);
                 }
@@ -314,10 +315,12 @@ pub mod auth {
         packets_to_send: VecDeque<Packet>,
         user_requests: VecDeque<ClientUserRequest>,
         is_authenticated: bool,
+        session_identifier: Option<[u8; 32]>,
     }
 
     pub enum ClientUserRequest {
         Password,
+        PrivateKeySign { session_identifier: [u8; 32] },
         Banner(Vec<u8>),
     }
 
@@ -333,7 +336,13 @@ pub mod auth {
                 username,
                 user_requests: VecDeque::new(),
                 is_authenticated: false,
+                session_identifier: None,
             }
+        }
+
+        pub fn set_session_identifier(&mut self, ident: [u8; 32]) {
+            assert!(self.session_identifier.is_none());
+            self.session_identifier = Some(ident);
         }
 
         pub fn is_authenticated(&self) -> bool {
@@ -379,6 +388,15 @@ pub mod auth {
 
                     if authentications.iter().any(|item| item == "password") {
                         self.user_requests.push_back(ClientUserRequest::Password);
+                    } else if authentications.iter().any(|item| item == "publickey") {
+                        // <https://datatracker.ietf.org/doc/html/rfc4252#section-7>
+                        // TODO: Ask the server whether there are any keys we can use instead of just yoloing the signature.
+                        self.user_requests
+                            .push_back(ClientUserRequest::PrivateKeySign {
+                                session_identifier: self
+                                    .session_identifier
+                                    .expect("set_session_identifier has not been called"),
+                            });
                     } else {
                         return Err(peer_error!(
                             "server does not support password authentication"

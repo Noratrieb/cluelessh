@@ -49,8 +49,12 @@ enum ClientState {
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },
-    ServiceRequest,
-    Open,
+    ServiceRequest {
+        session_identifier: [u8; 32],
+    },
+    Open {
+        session_identifier: [u8; 32],
+    },
 }
 
 impl ClientConnection {
@@ -229,6 +233,7 @@ impl ClientConnection {
                     let kex_secret = mem::take(kex_secret).unwrap();
                     let shared_secret = (kex_secret.exchange)(server_ephermal_key)?;
 
+                    // The exchange hash serves as the session identifier.
                     let hash = crypto::key_exchange_hash(
                         client_ident,
                         server_ident,
@@ -279,13 +284,15 @@ impl ClientConnection {
                         false,
                     );
 
-                    debug!("Requestin ssh-userauth service");
+                    debug!("Requesting ssh-userauth service");
                     self.packet_transport
                         .queue_packet(Packet::new_msg_service_request(b"ssh-userauth"));
 
-                    self.state = ClientState::ServiceRequest;
+                    self.state = ClientState::ServiceRequest {
+                        session_identifier: *h,
+                    };
                 }
-                ClientState::ServiceRequest => {
+                ClientState::ServiceRequest { session_identifier } => {
                     let mut accept = packet.payload_parser();
                     let packet_type = accept.u8()?;
                     if packet_type != numbers::SSH_MSG_SERVICE_ACCEPT {
@@ -297,9 +304,11 @@ impl ClientConnection {
                     }
 
                     debug!("Connection has been opened successfully");
-                    self.state = ClientState::Open;
+                    self.state = ClientState::Open {
+                        session_identifier: *session_identifier,
+                    };
                 }
-                ClientState::Open => {
+                ClientState::Open { .. } => {
                     self.plaintext_packets.push_back(packet);
                 }
             }
@@ -319,8 +328,11 @@ impl ClientConnection {
         self.packet_transport.queue_packet(packet);
     }
 
-    pub fn is_open(&self) -> bool {
-        matches!(self.state, ClientState::Open)
+    pub fn is_open(&self) -> Option<[u8; 32]> {
+        match self.state {
+            ClientState::Open { session_identifier } => Some(session_identifier),
+            _ => None,
+        }
     }
 
     fn send_kexinit(&mut self, client_ident: Vec<u8>, server_ident: Vec<u8>) {

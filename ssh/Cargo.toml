@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 ssh-protocol = { path = "../ssh-protocol" }
 ssh-transport = { path = "../ssh-transport" }
+ssh-agent-client = { path = "../ssh-agent-client" }
+
 clap = { version = "4.5.15", features = ["derive"] }
 eyre = "0.6.12"
 rand = "0.8.5"

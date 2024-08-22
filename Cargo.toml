@@ -6,6 +6,7 @@ members = [
     "ssh-connection",
     "ssh-protocol",
     "ssh-transport",
+    "ssh-agent-client", "ssh-agentctl",
 ]
 resolver = "2"
 
