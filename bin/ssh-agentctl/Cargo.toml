@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ssh-agent-client = { path = "../ssh-agent-client" } 
-ssh-transport = { path = "../ssh-transport" } 
+ssh-agent-client = { path = "../../lib/ssh-agent-client" } 
+ssh-transport = { path = "../../lib/ssh-transport" } 
 
 clap = { version = "4.5.16", features = ["derive"] }
 eyre = "0.6.12"

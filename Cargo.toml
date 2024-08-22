@@ -1,12 +1,7 @@
 [workspace]
 members = [
-    "fakesshd",
-    "ssh",
-    "sshdos",
-    "ssh-connection",
-    "ssh-protocol",
-    "ssh-transport",
-    "ssh-agent-client", "ssh-agentctl",
+    "lib/*",
+    "bin/*"
 ]
 resolver = "2"
 

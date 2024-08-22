@@ -7,7 +7,7 @@ edition = "2021"
 eyre = "0.6.12"
 hex-literal = "0.4.1"
 rand = "0.8.5"
-ssh-protocol = { path = "../ssh-protocol" }
+ssh-protocol = { path = "../../lib/ssh-protocol" }
 
 tokio = { version = "1.39.2", features = ["full"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
