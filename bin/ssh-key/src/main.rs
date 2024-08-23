@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -28,9 +29,9 @@ enum Subcommand {
     },
     /// Generate a new SSH key
     Generate {
-        #[arg(short, long = "type")]
+        #[arg(short, long = "type", default_value_t = KeyType::Ed25519)]
         type_: KeyType,
-        #[arg(short, long)]
+        #[arg(short, long, default_value_t = String::default())]
         comment: String,
         #[arg(short, long)]
         path: PathBuf,
@@ -53,6 +54,14 @@ enum DebugCommand {
 #[derive(clap::ValueEnum, Clone)]
 enum KeyType {
     Ed25519,
+}
+
+impl Display for KeyType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ed25519 => f.write_str("ed25519"),
+        }
+    }
 }
 
 fn main() -> eyre::Result<()> {

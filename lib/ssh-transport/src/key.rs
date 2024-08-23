@@ -44,6 +44,12 @@ impl PublicKey {
         }
         p.finish()
     }
+    
+    pub fn algorithm_name(&self) -> &'static str {
+        match self {
+            Self::Ed25519 { .. } => "ssh-ed25519",
+        }
+    }
 }
 
 impl Display for PublicKey {

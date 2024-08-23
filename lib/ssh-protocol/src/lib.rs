@@ -204,7 +204,7 @@ pub mod auth {
     use std::collections::VecDeque;
 
     use ssh_transport::{numbers, packet::Packet, parse::NameList, peer_error, Result};
-    use tracing::info;
+    use tracing::{debug, info};
 
     pub struct BadAuth {
         has_failed: bool,
@@ -368,6 +368,19 @@ pub mod auth {
             self.packets_to_send.push_back(packet);
         }
 
+        pub fn send_signature(&mut self, key_alg_name: &str, public_key: &[u8], signature: &[u8]) {
+            let packet = Packet::new_msg_userauth_request_publickey(
+                &self.username,
+                b"ssh-connection",
+                b"publickey",
+                true,
+                key_alg_name.as_bytes(),
+                public_key,
+                signature,
+            );
+            self.packets_to_send.push_back(packet);
+        }
+
         pub fn recv_packet(&mut self, packet: Packet) -> Result<()> {
             assert!(!self.is_authenticated, "Must not feed more packets to authentication after authentication is been completed, check with .is_authenticated()");
 
@@ -387,8 +400,10 @@ pub mod auth {
                     let _partial_success = p.bool()?;
 
                     if authentications.iter().any(|item| item == "password") {
+                        debug!("Received authentication failure, trying password");
                         self.user_requests.push_back(ClientUserRequest::Password);
                     } else if authentications.iter().any(|item| item == "publickey") {
+                        debug!("Received authentication failure, trying publickey");
                         // <https://datatracker.ietf.org/doc/html/rfc4252#section-7>
                         // TODO: Ask the server whether there are any keys we can use instead of just yoloing the signature.
                         self.user_requests

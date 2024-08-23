@@ -75,6 +75,15 @@ ctors! {
         false_: bool,
         password: string,
     );
+    fn new_msg_userauth_request_publickey(SSH_MSG_USERAUTH_REQUEST;
+        username: string,
+        service_name: string,
+        method_name_pubkey: string,
+        true_: bool,
+        pubkey_alg_name: string,
+        pubkey: string,
+        signature: string,
+    );
     fn new_msg_userauth_failure(SSH_MSG_USERAUTH_FAILURE;
         auth_options: name_list,
         partial_success: bool,
