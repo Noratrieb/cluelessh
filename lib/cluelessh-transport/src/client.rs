@@ -59,7 +59,7 @@ enum ClientState {
 
 impl ClientConnection {
     pub fn new(rng: impl SshRng + Send + Sync + 'static) -> Self {
-        let client_ident = b"SSH-2.0-FakeSSH\r\n".to_vec();
+        let client_ident = b"SSH-2.0-ClueleSSH\r\n".to_vec();
 
         let mut packet_transport = PacketTransport::new();
         packet_transport.queue_send_protocol_info(client_ident.clone());
