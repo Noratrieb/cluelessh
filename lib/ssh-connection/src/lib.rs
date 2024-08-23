@@ -20,10 +20,21 @@ pub struct ChannelsState {
     packets_to_send: VecDeque<Packet>,
     channel_updates: VecDeque<ChannelUpdate>,
 
-    channels: HashMap<ChannelNumber, Channel>,
+    channels: HashMap<ChannelNumber, ChannelState>,
     next_channel_id: ChannelNumber,
 
     is_server: bool,
+}
+
+enum ChannelState {
+    AwaitingConfirmation {
+        /// For validation only.
+        our_window_size: u32,
+        /// For validation only.
+        our_max_packet_size: u32,
+        update_message: ChannelOpen,
+    },
+    Open(Channel),
 }
 
 struct Channel {
@@ -58,6 +69,8 @@ pub struct ChannelUpdate {
 }
 #[derive(Debug)]
 pub enum ChannelUpdateKind {
+    Success,
+    Failure,
     Open(ChannelOpen),
     Request(ChannelRequest),
     Data { data: Vec<u8> },
@@ -65,7 +78,7 @@ pub enum ChannelUpdateKind {
     Eof,
     Closed,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelOpen {
     Session,
 }
@@ -138,12 +151,12 @@ impl ChannelsState {
     pub fn recv_packet(&mut self, packet: Packet) -> Result<()> {
         // TODO: window
 
-        let mut packet = packet.payload_parser();
-        let packet_type = packet.u8()?;
+        let mut p = packet.payload_parser();
+        let packet_type = p.u8()?;
         match packet_type {
             numbers::SSH_MSG_GLOBAL_REQUEST => {
-                let request_name = packet.utf8_string()?;
-                let want_reply = packet.bool()?;
+                let request_name = p.utf8_string()?;
+                let want_reply = p.bool()?;
                 debug!(%request_name, %want_reply, "Received global request");
 
                 self.packets_to_send
@@ -151,12 +164,12 @@ impl ChannelsState {
             }
             numbers::SSH_MSG_CHANNEL_OPEN => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.1>
-                let channel_type = packet.utf8_string()?;
-                let sender_channel = packet.u32()?;
-                let initial_window_size = packet.u32()?;
-                let max_packet_size = packet.u32()?;
+                let channel_type = p.utf8_string()?;
+                let sender_channel = p.u32()?;
+                let initial_window_size = p.u32()?;
+                let max_packet_size = p.u32()?;
 
-                debug!(%channel_type, %sender_channel, "Opening channel");
+                debug!(%channel_type, %sender_channel, "Receving channel open");
 
                 let update_message = match channel_type {
                     "session" => ChannelOpen::Session,
@@ -188,7 +201,7 @@ impl ChannelsState {
 
                 self.channels.insert(
                     our_number,
-                    Channel {
+                    ChannelState::Open(Channel {
                         we_closed: false,
                         peer_channel: sender_channel,
                         peer_max_packet_size: max_packet_size,
@@ -198,7 +211,7 @@ impl ChannelsState {
                         our_window_size_increase_step: initial_window_size,
 
                         queued_data: Vec::new(),
-                    },
+                    }),
                 );
 
                 self.channel_updates.push_back(ChannelUpdate {
@@ -208,10 +221,48 @@ impl ChannelsState {
 
                 debug!(%channel_type, %our_number, "Successfully opened channel");
             }
+            numbers::SSH_MSG_CHANNEL_OPEN_CONFIRMATION => {
+                let our_channel = p.u32()?;
+                let our_number = ChannelNumber(our_channel);
+                let Some(&ChannelState::AwaitingConfirmation {
+                    our_window_size,
+                    our_max_packet_size,
+                    ref update_message,
+                }) = self.channels.get(&our_number)
+                else {
+                    return Err(peer_error!("unknown channel: {our_channel}"));
+                };
+
+                let peer_channel = p.u32()?;
+                let peer_window_size = p.u32()?;
+                let peer_max_packet_size = p.u32()?;
+
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_number,
+                    kind: ChannelUpdateKind::Open(update_message.clone()),
+                });
+
+                self.channels.insert(
+                    our_number,
+                    ChannelState::Open(Channel {
+                        we_closed: false,
+                        peer_channel,
+                        peer_max_packet_size,
+                        peer_window_size,
+                        our_max_packet_size,
+                        our_window_size,
+                        our_window_size_increase_step: our_window_size,
+
+                        queued_data: Vec::new(),
+                    }),
+                );
+
+                debug!(channel_type = %"session", %our_number, "Successfully opened channel");
+            }
             numbers::SSH_MSG_CHANNEL_WINDOW_ADJUST => {
-                let our_channel = packet.u32()?;
+                let our_channel = p.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
-                let bytes_to_add = packet.u32()?;
+                let bytes_to_add = p.u32()?;
 
                 let channel = self.channel(our_channel)?;
                 channel.peer_window_size = channel
@@ -227,9 +278,9 @@ impl ChannelsState {
                 }
             }
             numbers::SSH_MSG_CHANNEL_DATA => {
-                let our_channel = packet.u32()?;
+                let our_channel = p.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
-                let data = packet.string()?;
+                let data = p.string()?;
 
                 let channel = self.channel(our_channel)?;
                 channel.our_window_size = channel
@@ -270,7 +321,7 @@ impl ChannelsState {
             }
             numbers::SSH_MSG_CHANNEL_EOF => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
-                let our_channel = packet.u32()?;
+                let our_channel = p.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
 
                 self.channel_updates.push_back(ChannelUpdate {
@@ -280,7 +331,7 @@ impl ChannelsState {
             }
             numbers::SSH_MSG_CHANNEL_CLOSE => {
                 // <https://datatracker.ietf.org/doc/html/rfc4254#section-5.3>
-                let our_channel = packet.u32()?;
+                let our_channel = p.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
                 let channel = self.channel(our_channel)?;
                 if !channel.we_closed {
@@ -299,10 +350,10 @@ impl ChannelsState {
                 debug!("Channel has been closed");
             }
             numbers::SSH_MSG_CHANNEL_REQUEST => {
-                let our_channel = packet.u32()?;
+                let our_channel = p.u32()?;
                 let our_channel = self.validate_channel(our_channel)?;
-                let request_type = packet.utf8_string()?;
-                let want_reply = packet.bool()?;
+                let request_type = p.utf8_string()?;
+                let want_reply = p.bool()?;
 
                 debug!(channel = %our_channel, %request_type, "Got channel request");
 
@@ -315,12 +366,12 @@ impl ChannelsState {
                             return Err(peer_error!("server tried to open pty"));
                         }
 
-                        let term = packet.utf8_string()?;
-                        let width_chars = packet.u32()?;
-                        let height_rows = packet.u32()?;
-                        let width_px = packet.u32()?;
-                        let height_px = packet.u32()?;
-                        let term_modes = packet.string()?;
+                        let term = p.utf8_string()?;
+                        let width_chars = p.u32()?;
+                        let height_rows = p.u32()?;
+                        let width_px = p.u32()?;
+                        let height_px = p.u32()?;
+                        let term_modes = p.string()?;
 
                         debug!(
                             channel = %our_channel,
@@ -353,7 +404,7 @@ impl ChannelsState {
                             return Err(peer_error!("server tried to execute command"));
                         }
 
-                        let command = packet.string()?;
+                        let command = p.string()?;
                         info!(channel = %our_channel, command = %String::from_utf8_lossy(command), "Executing command");
                         ChannelRequest::Exec {
                             want_reply,
@@ -365,8 +416,8 @@ impl ChannelsState {
                             return Err(peer_error!("server tried to set environment var"));
                         }
 
-                        let name = packet.utf8_string()?;
-                        let value = packet.string()?;
+                        let name = p.utf8_string()?;
+                        let value = p.string()?;
 
                         info!(channel = %our_channel, %name, value = %String::from_utf8_lossy(value), "Setting environment variable");
 
@@ -397,6 +448,24 @@ impl ChannelsState {
                     kind: ChannelUpdateKind::Request(channel_request),
                 })
             }
+            numbers::SSH_MSG_CHANNEL_SUCCESS => {
+                let our_channel = p.u32()?;
+                let our_channel = self.validate_channel(our_channel)?;
+
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_channel,
+                    kind: ChannelUpdateKind::Success,
+                });
+            }
+            numbers::SSH_MSG_CHANNEL_FAILURE => {
+                let our_channel = p.u32()?;
+                let our_channel = self.validate_channel(our_channel)?;
+
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_channel,
+                    kind: ChannelUpdateKind::Failure,
+                });
+            }
             _ => {
                 todo!(
                     "unsupported packet: {} ({packet_type})",
@@ -414,6 +483,43 @@ impl ChannelsState {
 
     pub fn next_channel_update(&mut self) -> Option<ChannelUpdate> {
         self.channel_updates.pop_front()
+    }
+
+    /// Create a new channel
+    pub fn create_channel(&mut self, kind: ChannelOpen) -> ChannelNumber {
+        let our_number = self.next_channel_id;
+        self.next_channel_id = ChannelNumber(
+            self.next_channel_id
+                .0
+                .checked_add(1)
+                .expect("created too many channels"),
+        );
+
+        assert_eq!(kind, ChannelOpen::Session, "TODO");
+
+        let our_window_size = 2097152; // same as OpenSSH
+        let our_max_packet_size = 32768; // same as OpenSSH
+
+        self.packets_to_send
+            .push_back(Packet::new_msg_channel_open_session(
+                b"session",
+                our_number.0,
+                our_window_size,
+                our_max_packet_size,
+            ));
+
+        self.channels.insert(
+            our_number,
+            ChannelState::AwaitingConfirmation {
+                our_window_size,
+                our_max_packet_size,
+                update_message: kind,
+            },
+        );
+
+        debug!(channel_type = %"session", %our_number, "Opening channel");
+
+        our_number
     }
 
     /// Executes an operation on the channel.
@@ -440,8 +546,28 @@ impl ChannelsState {
             }
             ChannelOperationKind::Request(req) => {
                 let packet = match req {
-                    ChannelRequest::PtyReq { .. } => todo!("pty-req"),
-                    ChannelRequest::Shell { .. } => todo!("shell"),
+                    ChannelRequest::PtyReq {
+                        want_reply,
+                        term,
+                        width_chars,
+                        height_rows,
+                        width_px,
+                        height_px,
+                        term_modes,
+                    } => Packet::new_msg_channel_request_pty_req(
+                        peer,
+                        b"pty-req",
+                        want_reply,
+                        term.as_bytes(),
+                        width_chars,
+                        height_rows,
+                        width_px,
+                        height_px,
+                        &term_modes,
+                    ),
+                    ChannelRequest::Shell { want_reply } => {
+                        Packet::new_msg_channel_request_shell(peer, b"shell", want_reply)
+                    }
                     ChannelRequest::Exec { .. } => todo!("exec"),
                     ChannelRequest::Env { .. } => todo!("env"),
                     ChannelRequest::ExitStatus { status } => {
@@ -540,9 +666,16 @@ impl ChannelsState {
     }
 
     fn channel(&mut self, number: ChannelNumber) -> Result<&mut Channel> {
-        self.channels
+        let state = self
+            .channels
             .get_mut(&number)
-            .ok_or_else(|| peer_error!("unknown channel: {number:?}"))
+            .ok_or_else(|| peer_error!("unknown channel: {number:?}"))?;
+        match state {
+            ChannelState::AwaitingConfirmation { .. } => {
+                Err(peer_error!("channel not fully opened: {number:?}"))
+            }
+            ChannelState::Open(channel) => Ok(channel),
+        }
     }
 }
 

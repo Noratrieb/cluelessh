@@ -154,6 +154,13 @@ impl ClientConnection {
         }
     }
 
+    pub fn channels(&mut self) -> Option<&mut ssh_connection::ChannelsState> {
+        match &mut self.state {
+            ClientConnectionState::Open(channels) => Some(channels),
+            _ => None,
+        }
+    }
+
     pub fn is_open(&self) -> bool {
         matches!(self.state, ClientConnectionState::Open(_))
     }

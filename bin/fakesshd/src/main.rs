@@ -208,7 +208,10 @@ async fn handle_connection(
                         state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
                     }
                 }
-                ChannelUpdateKind::ExtendedData { .. } | ChannelUpdateKind::Eof => { /* ignore */ }
+                ChannelUpdateKind::ExtendedData { .. }
+                | ChannelUpdateKind::Eof
+                | ChannelUpdateKind::Success
+                | ChannelUpdateKind::Failure => { /* ignore */ }
                 ChannelUpdateKind::Closed => {
                     session_channels.remove(&update.number);
                 }

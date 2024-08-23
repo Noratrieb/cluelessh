@@ -4,7 +4,7 @@ use clap::Parser;
 
 use eyre::{bail, Context, ContextCompat, OptionExt};
 use rand::RngCore;
-use ssh_transport::{key::PublicKey, numbers, parse::Writer};
+use ssh_transport::{key::PublicKey, numbers, parse::Writer, peer_error};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -12,8 +12,11 @@ use tokio::{
 use tracing::{debug, error, info};
 
 use ssh_protocol::{
+    connection::{
+        ChannelNumber, ChannelOpen, ChannelOperation, ChannelOperationKind, ChannelRequest,
+    },
     transport::{self},
-    SshStatus,
+    ChannelUpdate, ChannelUpdateKind, SshStatus,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -41,6 +44,13 @@ enum Operation {
         public_key: Vec<u8>,
         signature: Vec<u8>,
     },
+}
+
+// TODO: state machine everything including auth
+enum ClientState {
+    Start,
+    WaitingForOpen(ChannelNumber),
+    WaitingForPty(ChannelNumber),
 }
 
 #[tokio::main]
@@ -78,17 +88,13 @@ async fn main() -> eyre::Result<()> {
         ssh_protocol::auth::ClientAuth::new(username.as_bytes().to_vec()),
     );
 
+    let mut client_state = ClientState::Start;
+
     let (send_op, mut recv_op) = tokio::sync::mpsc::channel::<Operation>(10);
 
     let mut buf = [0; 1024];
 
     loop {
-        while let Some(msg) = state.next_msg_to_send() {
-            conn.write_all(&msg.to_bytes())
-                .await
-                .wrap_err("writing response")?;
-        }
-
         if let Some(auth) = state.auth() {
             for req in auth.user_requests() {
                 match req {
@@ -157,6 +163,53 @@ async fn main() -> eyre::Result<()> {
                     }
                 }
             }
+        }
+
+        if let Some(channels) = state.channels() {
+            if let ClientState::Start = client_state {
+                let number = channels.create_channel(ChannelOpen::Session);
+                client_state = ClientState::WaitingForOpen(number);
+            }
+
+            while let Some(update) = channels.next_channel_update() {
+                match &update.kind {
+                    ChannelUpdateKind::Open(_) => match client_state {
+                        ClientState::WaitingForOpen(number) => {
+                            if number != update.number {
+                                bail!("unexpected channel opened by server");
+                            }
+                            client_state = ClientState::WaitingForPty(update.number);
+                            channels.do_operation(number.construct_op(
+                                ChannelOperationKind::Request(ChannelRequest::PtyReq {
+                                    want_reply: true,
+                                    term: "xterm-256color".to_owned(),
+                                    width_chars: 70,
+                                    height_rows: 10,
+                                    width_px: 0,
+                                    height_px: 0,
+                                    term_modes: vec![],
+                                }),
+                            ));
+                        }
+                        _ => bail!("unexpected channel opened by server"),
+                    },
+                    ChannelUpdateKind::Success => {}
+                    ChannelUpdateKind::Failure => bail!("operation failed"),
+                    ChannelUpdateKind::Request(_) => todo!(),
+                    ChannelUpdateKind::Data { .. } => todo!(),
+                    ChannelUpdateKind::ExtendedData { .. } => todo!(),
+                    ChannelUpdateKind::Eof => todo!(),
+                    ChannelUpdateKind::Closed => todo!(),
+                }
+            }
+        }
+
+        // Make sure that we send all queues messages before going into the select, waiting for things to happen.
+        state.progress();
+        while let Some(msg) = state.next_msg_to_send() {
+            conn.write_all(&msg.to_bytes())
+                .await
+                .wrap_err("writing response")?;
         }
 
         tokio::select! {
