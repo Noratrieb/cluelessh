@@ -4,7 +4,7 @@ use clap::Parser;
 
 use eyre::{bail, Context, ContextCompat, OptionExt};
 use rand::RngCore;
-use ssh_transport::{key::PublicKey, parse::Writer};
+use ssh_transport::{key::PublicKey, numbers, parse::Writer};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -122,21 +122,22 @@ async fn main() -> eyre::Result<()> {
                             todo!("try identities");
                         }
                         let identity = &identities[0];
-                        if attempted_public_keys.insert(identity.key_blob.clone()) {
+                        if !attempted_public_keys.insert(identity.key_blob.clone()) {
                             bail!("authentication denied (publickey)");
                         }
                         let pubkey = PublicKey::from_wire_encoding(&identity.key_blob)?;
 
-                        let mut sig = Writer::new();
-                        sig.string(session_identifier);
-                        sig.string(&username);
-                        sig.string("ssh-connection");
-                        sig.string("publickey");
-                        sig.bool(true);
-                        sig.string(pubkey.algorithm_name());
-                        sig.string(&identity.key_blob);
+                        let mut sign_data = Writer::new();
+                        sign_data.string(session_identifier);
+                        sign_data.u8(numbers::SSH_MSG_USERAUTH_REQUEST);
+                        sign_data.string(&username);
+                        sign_data.string("ssh-connection");
+                        sign_data.string("publickey");
+                        sign_data.bool(true);
+                        sign_data.string(pubkey.algorithm_name());
+                        sign_data.string(&identity.key_blob);
 
-                        let data = sig.finish();
+                        let data = sign_data.finish();
                         let signature = agent
                             .sign(&identity.key_blob, &data, 0)
                             .await

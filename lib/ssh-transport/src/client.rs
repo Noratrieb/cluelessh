@@ -101,14 +101,15 @@ impl ClientConnection {
 
             trace!(%packet_type, %packet_type_string, packet_len = %packet.payload.len(), "Received packet");
 
+            // TODO: deduplicate with server
             // Handle some packets ignoring the state.
             match packet.payload.first().copied() {
                 Some(numbers::SSH_MSG_DISCONNECT) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.1>
-                    let mut disconnect = Parser::new(&packet.payload[1..]);
-                    let reason = disconnect.u32()?;
-                    let description = disconnect.utf8_string()?;
-                    let _language_tag = disconnect.utf8_string()?;
+                    let mut p = Parser::new(&packet.payload[1..]);
+                    let reason = p.u32()?;
+                    let description = p.utf8_string()?;
+                    let _language_tag = p.utf8_string()?;
 
                     let reason_string =
                         numbers::disconnect_reason_to_string(reason).unwrap_or("<unknown>");
@@ -116,6 +117,26 @@ impl ClientConnection {
                     info!(%reason, %reason_string, %description, "Server disconnecting");
 
                     return Err(SshStatus::Disconnect);
+                }
+                Some(numbers::SSH_MSG_IGNORE) => {
+                    // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.2>
+                    let mut p = Parser::new(&packet.payload[1..]);
+                    let _ = p.string()?;
+                    continue;
+                }
+                Some(numbers::SSH_MSG_DEBUG) => {
+                    // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.3>
+                    let mut p = Parser::new(&packet.payload[1..]);
+                    let always_display = p.bool()?;
+                    let msg = p.utf8_string()?;
+                    let _language_tag = p.utf8_string()?;
+
+                    if always_display {
+                        info!(%msg, "Received debug message (SSH_MSG_DEBUG)");
+                    } else {
+                        debug!(%msg, "Received debug message (SSH_MSG_DEBUG)")
+                    }
+                    continue;
                 }
                 _ => {}
             }
