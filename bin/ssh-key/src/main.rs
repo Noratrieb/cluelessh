@@ -11,15 +11,12 @@ use ssh_keys::{KeyEncryptionParams, PrivateKeyType};
 #[derive(clap::Parser)]
 struct Args {
     #[command(subcommand)]
-    command: Subcommand,
+    cmd: Subcommand,
 }
 
 #[derive(clap::Subcommand)]
 enum Subcommand {
-    /// Strips PEM armor
-    Unpem { id_file: PathBuf },
-    /// Extract the encrypted part of the private key
-    ExtractEncrypted { id_file: PathBuf },
+    /// Get information about an SSH key
     Info {
         /// Decrypt the key to get more information. Will not display private information unless --show-private is used
         #[arg(short, long)]
@@ -29,6 +26,7 @@ enum Subcommand {
         show_private: bool,
         id_file: PathBuf,
     },
+    /// Generate a new SSH key
     Generate {
         #[arg(short, long = "type")]
         type_: KeyType,
@@ -37,6 +35,19 @@ enum Subcommand {
         #[arg(short, long)]
         path: PathBuf,
     },
+    /// Commands for debugging SSH keys
+    Debug {
+        #[command(subcommand)]
+        cmd: DebugCommand,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum DebugCommand {
+    /// Strips PEM armor
+    Unpem { id_file: PathBuf },
+    /// Extract the encrypted part of the private key
+    ExtractEncrypted { id_file: PathBuf },
 }
 
 #[derive(clap::ValueEnum, Clone)]
@@ -47,15 +58,19 @@ enum KeyType {
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
-    match args.command {
-        Subcommand::Unpem { id_file } => {
+    match args.cmd {
+        Subcommand::Debug {
+            cmd: DebugCommand::Unpem { id_file },
+        } => {
             let file = std::fs::read(&id_file)
                 .wrap_err_with(|| format!("reading file {}", id_file.display()))?;
             let raw = pem::parse(&file)?;
             std::io::stdout().lock().write_all(raw.contents())?;
             Ok(())
         }
-        Subcommand::ExtractEncrypted { id_file } => {
+        Subcommand::Debug {
+            cmd: DebugCommand::ExtractEncrypted { id_file },
+        } => {
             let file = std::fs::read(&id_file)
                 .wrap_err_with(|| format!("reading file {}", id_file.display()))?;
             let keys = ssh_keys::EncryptedPrivateKeys::parse(&file)?;
