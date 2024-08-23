@@ -2,8 +2,9 @@ use std::{io::Write, path::PathBuf};
 
 use clap::Parser;
 use eyre::{bail, Context};
+use sha2::Digest;
 use ssh_agent_client::{IdentityAnswer, SocketAgentConnection};
-use ssh_transport::key::PublicKey;
+use ssh_transport::{key::PublicKey, parse::Writer};
 
 #[derive(clap::Parser, Debug)]
 struct Args {
@@ -28,8 +29,11 @@ enum Subcommand {
     /// Sign a blob, SSH_AGENTC_SIGN_REQUEST
     Sign {
         /// The key-id of the key, obtained with list-identities --key-id
-        #[arg(short, long = "key")]
+        #[arg(short, long)]
         key: Option<String>,
+        /// The domain of the signature, for example 'file'
+        #[arg(short, long)]
+        namespace: String,
         file: PathBuf,
     },
     /// Temporarily lock the agent with a passphrase, SSH_AGENTC_LOCK
@@ -64,7 +68,15 @@ async fn main() -> eyre::Result<()> {
         Subcommand::ListIdentities { key_id } => {
             list_ids(&mut agent, key_id).await?;
         }
-        Subcommand::Sign { file, key } => {
+        Subcommand::Sign {
+            file,
+            key,
+            namespace,
+        } => {
+            if namespace.is_empty() {
+                bail!("namespace must not be empty");
+            }
+
             let file = std::fs::read(&file)
                 .wrap_err_with(|| format!("reading file {}", file.display()))?;
 
@@ -107,10 +119,27 @@ async fn main() -> eyre::Result<()> {
                 }
             };
 
-            let signature = agent.sign(&key.key_blob, &file, 0).await?;
+            // <https://github.com/openssh/openssh-portable/blob/a76a6b85108e3032c8175611ecc5746e7131f876/PROTOCOL.sshsig>
 
-            // TODO: https://github.com/openssh/openssh-portable/blob/a76a6b85108e3032c8175611ecc5746e7131f876/PROTOCOL.sshsig
-            let signature = pem::encode(&pem::Pem::new("SSH SIGNATURE", signature));
+            let mut sign_data = Writer::new();
+            sign_data.raw(b"SSHSIG");
+            sign_data.string(&namespace);
+            sign_data.string([]);
+            sign_data.string(b"sha512");
+            sign_data.string(sha2::Sha512::digest(file));
+
+            let signature = agent.sign(&key.key_blob, &sign_data.finish(), 0).await?;
+
+            let mut sig = Writer::new();
+            sig.raw(b"SSHSIG");
+            sig.u32(1); // version
+            sig.string(&key.key_blob); // publickey
+            sig.string(namespace.as_bytes());
+            sig.string(b""); // reserved
+            sig.string(b"sha512"); // hash algorithm
+            sig.string(&signature);
+
+            let signature = pem::encode(&pem::Pem::new("SSH SIGNATURE", sig.finish()));
             std::io::stdout().write_all(signature.as_bytes())?;
         }
         Subcommand::Lock => {

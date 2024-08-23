@@ -113,6 +113,7 @@ pub enum ExtensionResponse {
 /// A single identity in SSH_AGENT_IDENTITIES_ANSWER.
 #[derive(Debug)]
 pub struct IdentityAnswer {
+    /// The public key in the SSH wire encoding.
     pub key_blob: Vec<u8>,
     pub comment: String,
 }

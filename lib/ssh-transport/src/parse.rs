@@ -107,7 +107,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// A simplified `byteorder` clone that emits client errors when the data is too short.
+/// A writer for the SSH wire format.
 pub struct Writer(Vec<u8>);
 
 impl Writer {
@@ -149,7 +149,8 @@ impl Writer {
         self.raw(bytes);
     }
 
-    pub fn string(&mut self, data: &[u8]) {
+    pub fn string(&mut self, data: impl AsRef<[u8]>) {
+        let data = data.as_ref();
         self.u32(data.len() as u32);
         self.raw(data);
     }
