@@ -1,0 +1,11 @@
+[package]
+name = "cluelessh-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8.5"
+cluelessh-connection = { path = "../cluelessh-connection" }
+cluelessh-transport = { path = "../cluelessh-transport" }
+tracing.workspace = true
+

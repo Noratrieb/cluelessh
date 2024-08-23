@@ -1,0 +1,11 @@
+[package]
+name = "cluelessh-connection"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cluelessh-transport = { path = "../cluelessh-transport" }
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }

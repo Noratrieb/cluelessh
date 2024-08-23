@@ -1,0 +1,15 @@
+[package]
+name = "cluelessh-faked"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eyre = "0.6.12"
+hex-literal = "0.4.1"
+rand = "0.8.5"
+cluelessh-protocol = { path = "../../lib/cluelessh-protocol" }
+
+tokio = { version = "1.39.2", features = ["full"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+
+tracing.workspace = true
