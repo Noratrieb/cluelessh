@@ -180,6 +180,7 @@ async fn handle_connection(
                         ChannelRequest::Env { .. } => {}
                     };
                 }
+                ChannelUpdateKind::OpenFailed { .. } => todo!(),
                 ChannelUpdateKind::Data { data } => {
                     let is_eof = data.contains(&0x04 /*EOF, Ctrl-D*/);
 

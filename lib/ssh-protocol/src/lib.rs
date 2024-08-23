@@ -7,6 +7,14 @@ pub use ssh_transport as transport;
 pub use ssh_transport::{Result, SshStatus};
 use tracing::debug;
 
+pub struct ThreadRngRand;
+impl transport::SshRng for ThreadRngRand {
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(dest);
+    }
+}
+
 pub struct ServerConnection {
     transport: ssh_transport::server::ServerConnection,
     state: ServerConnectionState,

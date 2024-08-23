@@ -72,6 +72,7 @@ pub enum ChannelUpdateKind {
     Success,
     Failure,
     Open(ChannelOpen),
+    OpenFailed { code: u32, message: String },
     Request(ChannelRequest),
     Data { data: Vec<u8> },
     ExtendedData { code: u32, data: Vec<u8> },
@@ -258,6 +259,31 @@ impl ChannelsState {
                 );
 
                 debug!(channel_type = %"session", %our_number, "Successfully opened channel");
+            }
+            numbers::SSH_MSG_CHANNEL_OPEN_FAILURE => {
+                let our_channel = p.u32()?;
+                let our_number = ChannelNumber(our_channel);
+                let Some(&ChannelState::AwaitingConfirmation { .. }) =
+                    self.channels.get(&our_number)
+                else {
+                    return Err(peer_error!("unknown channel: {our_channel}"));
+                };
+
+                let reason_code = p.u32()?;
+                let reason_msg = p.utf8_string()?;
+                let _language_tag = p.utf8_string()?;
+
+                debug!(%our_number, %reason_code, %reason_msg, "Failed to open channel");
+
+                self.channel_updates.push_back(ChannelUpdate {
+                    number: our_number,
+                    kind: ChannelUpdateKind::OpenFailed {
+                        code: reason_code,
+                        message: reason_msg.to_owned(),
+                    },
+                });
+
+                self.channels.remove(&our_number);
             }
             numbers::SSH_MSG_CHANNEL_WINDOW_ADJUST => {
                 let our_channel = p.u32()?;

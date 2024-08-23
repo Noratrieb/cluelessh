@@ -1210,6 +1210,7 @@ dependencies = [
  "rpassword",
  "ssh-agent-client",
  "ssh-protocol",
+ "ssh-tokio",
  "ssh-transport",
  "tokio",
  "tracing",
@@ -1282,8 +1283,22 @@ dependencies = [
 name = "ssh-protocol"
 version = "0.1.0"
 dependencies = [
+ "rand",
  "ssh-connection",
  "ssh-transport",
+ "tracing",
+]
+
+[[package]]
+name = "ssh-tokio"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "futures",
+ "ssh-connection",
+ "ssh-protocol",
+ "ssh-transport",
+ "tokio",
  "tracing",
 ]
 
