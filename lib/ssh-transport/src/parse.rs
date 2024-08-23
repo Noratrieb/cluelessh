@@ -116,19 +116,19 @@ impl Writer {
     }
 
     pub fn u8(&mut self, v: u8) {
-        self.write(&[v]);
+        self.raw(&[v]);
     }
 
     pub fn u32(&mut self, v: u32) {
-        self.write(&u32::to_be_bytes(v));
+        self.raw(&u32::to_be_bytes(v));
     }
 
-    pub fn write(&mut self, v: &[u8]) {
+    pub fn raw(&mut self, v: &[u8]) {
         self.0.extend_from_slice(v);
     }
 
     pub fn array<const N: usize>(&mut self, arr: [u8; N]) {
-        self.write(&arr);
+        self.raw(&arr);
     }
 
     pub fn name_list(&mut self, list: NameList<'_>) {
@@ -146,12 +146,12 @@ impl Writer {
         if pad_zero {
             self.u8(0);
         }
-        self.write(bytes);
+        self.raw(bytes);
     }
 
     pub fn string(&mut self, data: &[u8]) {
         self.u32(data.len() as u32);
-        self.write(data);
+        self.raw(data);
     }
 
     pub fn bool(&mut self, v: bool) {

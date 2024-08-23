@@ -45,7 +45,7 @@ impl Request {
             } => {
                 p.u8(numbers::SSH_AGENTC_ADD_IDENTITY);
                 p.string(key_type.as_bytes());
-                p.write(&key_contents);
+                p.raw(&key_contents);
                 p.string(key_comment.as_bytes());
             }
             Self::RemoveAllIdentities => p.u8(numbers::SSH_AGENTC_REMOVE_ALL_IDENTITIES),

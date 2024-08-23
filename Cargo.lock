@@ -408,6 +408,7 @@ checksum = "4a3daa8e81a3963a60642bcc1f90a670680bd4a77535faa384e9d1c79d620871"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core",
  "serde",
  "sha2",
  "subtle",
@@ -1257,6 +1258,7 @@ dependencies = [
  "base64",
  "clap",
  "eyre",
+ "pem",
  "rpassword",
  "ssh-keys",
  "tracing",
@@ -1269,7 +1271,9 @@ dependencies = [
  "aes",
  "bcrypt-pbkdf",
  "ctr",
+ "ed25519-dalek",
  "pem",
+ "rand",
  "ssh-transport",
 ]
 
