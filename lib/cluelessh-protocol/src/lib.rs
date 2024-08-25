@@ -26,7 +26,7 @@ pub struct ServerConnection {
 enum ServerConnectionState {
     Setup(HashSet<AuthOption>, Option<String>),
     Auth(auth::ServerAuth),
-    Open(cluelessh_connection::ChannelsState),
+    Open(cluelessh_connection::ChannelsState, String),
 }
 
 impl ServerConnection {
@@ -63,7 +63,7 @@ impl ServerConnection {
                         self.transport.send_plaintext_packet(to_send);
                     }
                 }
-                ServerConnectionState::Open(con) => {
+                ServerConnectionState::Open(con, _) => {
                     con.recv_packet(packet)?;
                 }
             }
@@ -81,7 +81,7 @@ impl ServerConnection {
     pub fn next_channel_update(&mut self) -> Option<cluelessh_connection::ChannelUpdate> {
         match &mut self.state {
             ServerConnectionState::Setup(..) | ServerConnectionState::Auth(_) => None,
-            ServerConnectionState::Open(con) => con.next_channel_update(),
+            ServerConnectionState::Open(con, _) => con.next_channel_update(),
         }
     }
 
@@ -90,7 +90,7 @@ impl ServerConnection {
             ServerConnectionState::Setup(..) | ServerConnectionState::Auth(_) => {
                 panic!("tried to get connection before it is ready")
             }
-            ServerConnectionState::Open(con) => {
+            ServerConnectionState::Open(con, _) => {
                 con.do_operation(op);
                 self.progress();
             }
@@ -104,12 +104,14 @@ impl ServerConnection {
                 for to_send in auth.packets_to_send() {
                     self.transport.send_plaintext_packet(to_send);
                 }
-                if auth.is_authenticated() {
-                    self.state =
-                        ServerConnectionState::Open(cluelessh_connection::ChannelsState::new(true));
+                if let Some(user) = auth.authenticated_user() {
+                    self.state = ServerConnectionState::Open(
+                        cluelessh_connection::ChannelsState::new(true),
+                        user.to_owned(),
+                    );
                 }
             }
-            ServerConnectionState::Open(con) => {
+            ServerConnectionState::Open(con, _) => {
                 for to_send in con.packets_to_send() {
                     self.transport.send_plaintext_packet(to_send);
                 }
@@ -119,7 +121,7 @@ impl ServerConnection {
 
     pub fn channels(&mut self) -> Option<&mut cluelessh_connection::ChannelsState> {
         match &mut self.state {
-            ServerConnectionState::Open(channels) => Some(channels),
+            ServerConnectionState::Open(channels, _) => Some(channels),
             _ => None,
         }
     }
@@ -127,6 +129,13 @@ impl ServerConnection {
     pub fn auth(&mut self) -> Option<&mut auth::ServerAuth> {
         match &mut self.state {
             ServerConnectionState::Auth(auth) => Some(auth),
+            _ => None,
+        }
+    }
+
+    pub fn authenticated_user(&self) -> Option<&str> {
+        match &self.state {
+            ServerConnectionState::Open(_, user) => Some(user),
             _ => None,
         }
     }
@@ -263,7 +272,7 @@ pub mod auth {
     pub struct ServerAuth {
         has_failed: bool,
         packets_to_send: VecDeque<Packet>,
-        is_authenticated: bool,
+        is_authenticated: Option<String>,
         options: HashSet<AuthOption>,
         banner: Option<String>,
         server_requests: VecDeque<ServerRequest>,
@@ -272,14 +281,28 @@ pub mod auth {
 
     pub enum ServerRequest {
         VerifyPassword(VerifyPassword),
-        VerifyPubkey(VerifyPubkey),
+        /// Check whether a pubkey is usable.
+        CheckPubkey(CheckPubkey),
+        /// Verify the signature from a pubkey.
+        VerifySignature(VerifySignature),
     }
 
+    #[derive(Debug, Clone)]
     pub struct VerifyPassword {
         pub user: String,
         pub password: String,
     }
-    pub struct VerifyPubkey {
+
+    #[derive(Debug, Clone)]
+    pub struct CheckPubkey {
+        pub user: String,
+        pub session_identifier: [u8; 32],
+        pub pubkey_alg_name: Vec<u8>,
+        pub pubkey: Vec<u8>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct VerifySignature {
         pub user: String,
         pub session_identifier: [u8; 32],
         pub pubkey_alg_name: Vec<u8>,
@@ -303,7 +326,7 @@ pub mod auth {
                 has_failed: false,
                 packets_to_send: VecDeque::new(),
                 options,
-                is_authenticated: false,
+                is_authenticated: None,
                 session_ident,
                 banner,
                 server_requests: VecDeque::new(),
@@ -311,7 +334,7 @@ pub mod auth {
         }
 
         pub fn recv_packet(&mut self, packet: Packet) -> Result<()> {
-            assert!(!self.is_authenticated, "Must not feed more packets to authentication after authentication is been completed, check with .is_authenticated()");
+            assert!(self.is_authenticated.is_none(), "Must not feed more packets to authentication after authentication is been completed, check with .is_authenticated()");
 
             // This is a super simplistic implementation of RFC4252 SSH authentication.
             // We ask for a public key, and always let that one pass.
@@ -366,24 +389,31 @@ pub mod auth {
                         self.send_failure();
                     }
 
-                    // Whether the client is just checking whether the public key is allowed.
-                    let is_check = p.bool()?;
-                    if is_check {
-                        todo!();
-                    }
+                    let has_signature = p.bool()?;
 
                     let pubkey_alg_name = p.string()?;
                     let public_key_blob = p.string()?;
-                    let signature = p.string()?;
 
-                    self.server_requests
-                        .push_back(ServerRequest::VerifyPubkey(VerifyPubkey {
-                            user: username.to_owned(),
-                            session_identifier: self.session_ident,
-                            pubkey_alg_name: pubkey_alg_name.to_vec(),
-                            pubkey: public_key_blob.to_vec(),
-                            signature: signature.to_vec(),
-                        }));
+                    // Whether the client is just checking whether the public key is allowed.
+                    if !has_signature {
+                        self.server_requests
+                            .push_back(ServerRequest::CheckPubkey(CheckPubkey {
+                                user: username.to_owned(),
+                                session_identifier: self.session_ident,
+                                pubkey_alg_name: pubkey_alg_name.to_vec(),
+                                pubkey: public_key_blob.to_vec(),
+                            }));
+                    } else {
+                        let signature = p.string()?;
+                        self.server_requests
+                            .push_back(ServerRequest::VerifySignature(VerifySignature {
+                                user: username.to_owned(),
+                                session_identifier: self.session_ident,
+                                pubkey_alg_name: pubkey_alg_name.to_vec(),
+                                pubkey: public_key_blob.to_vec(),
+                                signature: signature.to_vec(),
+                            }));
+                    }
                 }
                 _ if self.has_failed => {
                     return Err(peer_error!(
@@ -402,10 +432,20 @@ pub mod auth {
             Ok(())
         }
 
-        pub fn verification_result(&mut self, is_ok: bool) {
+        pub fn pubkey_check_result(&mut self, is_ok: bool, alg: &[u8], key_blob: &[u8]) {
+            if is_ok {
+                self.queue_packet(Packet::new_msg_userauth_pk_ok(alg, key_blob));
+            } else {
+                self.send_failure();
+                // It's ok, don't treat this as a fatal failure.
+            }
+        }
+
+        // TODO: improve types with a newtype around an authenticated user
+        pub fn verification_result(&mut self, is_ok: bool, user: String) {
             if is_ok {
                 self.queue_packet(Packet::new_msg_userauth_success());
-                self.is_authenticated = true;
+                self.is_authenticated = Some(user);
             } else {
                 self.send_failure();
                 self.has_failed = true;
@@ -416,8 +456,8 @@ pub mod auth {
             self.packets_to_send.drain(..)
         }
 
-        pub fn is_authenticated(&self) -> bool {
-            self.is_authenticated
+        pub fn authenticated_user(&self) -> Option<&str> {
+            self.is_authenticated.as_deref()
         }
 
         pub fn server_requests(&mut self) -> impl Iterator<Item = ServerRequest> + '_ {

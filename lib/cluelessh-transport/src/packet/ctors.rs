@@ -92,6 +92,10 @@ ctors! {
     fn new_msg_userauth_banner(SSH_MSG_USERAUTH_BANNER; msg: string, language_tag: string);
 
     //  60 to 79   User authentication method specific (numbers can be reused for different authentication methods)
+    fn new_msg_userauth_pk_ok(SSH_MSG_USERAUTH_PK_OK;
+        key_alg: string,
+        key_blob: string,
+    );
 
     // -----
     // Connection protocol:

@@ -3,7 +3,6 @@
 use std::{
     io::{Read, Write},
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
-    path::PathBuf,
 };
 
 use eyre::{Context, Result};
@@ -24,6 +23,7 @@ pub struct Pty {
     pub ctrl_write_send: mpsc::Sender<Vec<u8>>,
     pub ctrl_read_recv: mpsc::Receiver<Vec<u8>>,
     user_pty: OwnedFd,
+    user_pty_name: String,
 }
 
 impl Pty {
@@ -37,12 +37,12 @@ impl Pty {
         rustix::pty::unlockpt(&controller).wrap_err("unlocking pty")?;
 
         let user_pty_name = rustix::pty::ptsname(&controller, Vec::new())?;
-        let user_pty_name =
-            std::str::from_utf8(user_pty_name.as_bytes()).wrap_err("pty name is invalid UTF-8")?;
-        let user_pty_name = PathBuf::from(user_pty_name);
+        let user_pty_name = std::str::from_utf8(user_pty_name.as_bytes())
+            .wrap_err("pty name is invalid UTF-8")?
+            .to_owned();
 
         let user_pty =
-            rustix::fs::open(user_pty_name, OFlags::RDWR | OFlags::NOCTTY, Mode::empty())?;
+            rustix::fs::open(&user_pty_name, OFlags::RDWR | OFlags::NOCTTY, Mode::empty())?;
 
         // Configure terminal:
         rustix::termios::tcsetwinsize(&user_pty, winsize)?;
@@ -85,6 +85,7 @@ impl Pty {
             ctrl_write_send,
             ctrl_read_recv,
             user_pty,
+            user_pty_name,
         })
     }
 
@@ -106,6 +107,7 @@ impl Pty {
                 Ok(())
             });
             cmd.env("TERM", &self.term);
+            cmd.env("SSH_TTY", &self.user_pty_name);
         }
 
         Ok(())

@@ -3,7 +3,7 @@ mod pty;
 use std::{io, net::SocketAddr, process::ExitStatus, sync::Arc};
 
 use cluelessh_tokio::{server::ServerAuthVerify, Channel};
-use eyre::{bail, Context, Result};
+use eyre::{bail, Context, OptionExt, Result};
 use pty::Pty;
 use rustix::termios::Winsize;
 use tokio::{
@@ -18,6 +18,7 @@ use cluelessh_protocol::{
     ChannelUpdateKind, SshStatus,
 };
 use tracing_subscriber::EnvFilter;
+use users::os::unix::UserExt;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> eyre::Result<()> {
@@ -36,16 +37,22 @@ async fn main() -> eyre::Result<()> {
     let listener = TcpListener::bind(addr).await.wrap_err("binding listener")?;
 
     let auth_verify = ServerAuthVerify {
-        verify_password: Some(Arc::new(|auth| {
+        verify_password: None,
+        verify_signature: Some(Arc::new(|auth| {
             Box::pin(async move {
-                debug!(user = %auth.user, "Attempting password login");
-                // Don't worry queen, your password is correct!
+                debug!(user = %auth.user, "Attempting publickey login");
                 warn!("Letting in unauthenticated user");
-                Ok(())
+                Ok(true)
             })
         })),
-        verify_pubkey: None,
-        auth_banner: Some("welcome to my server!!!\r\ni hope you enjoy our stay.\r\n".to_owned()),
+        check_pubkey: Some(Arc::new(|auth| {
+            Box::pin(async move {
+                debug!(user = %auth.user, "Attempting publickey check");
+                warn!("Letting in unauthenticated user");
+                Ok(true)
+            })
+        })),
+        auth_banner: Some("welcome to my server!!!\r\ni hope you enjoy your stay.\r\n".to_owned()),
     };
 
     let mut listener = cluelessh_tokio::server::ServerListener::new(listener, auth_verify);
@@ -95,9 +102,10 @@ async fn handle_connection(
         }
 
         while let Some(channel) = conn.next_new_channel() {
+            let user = conn.inner().authenticated_user().unwrap().to_owned();
             if *channel.kind() == ChannelKind::Session {
-                tokio::spawn(async {
-                    let _ = handle_session_channel(channel).await;
+                tokio::spawn(async move {
+                    let _ = handle_session_channel(user, channel).await;
                 });
             } else {
                 warn!("Trying to open non-session channel");
@@ -107,16 +115,18 @@ async fn handle_connection(
 }
 
 struct SessionState {
+    user: String,
     pty: Option<Pty>,
     channel: Channel,
     process_exit_send: mpsc::Sender<Result<ExitStatus, io::Error>>,
     process_exit_recv: mpsc::Receiver<Result<ExitStatus, io::Error>>,
 }
 
-async fn handle_session_channel(channel: Channel) -> Result<()> {
+async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
     let (process_exit_send, process_exit_recv) = tokio::sync::mpsc::channel(1);
 
     let mut state = SessionState {
+        user,
         pty: None,
         channel,
         process_exit_send,
@@ -200,7 +210,13 @@ impl SessionState {
                         }
                     }
                     ChannelRequest::Shell { want_reply } => {
-                        let shell = "bash";
+                        let user = self.user.clone();
+                        let user =
+                            tokio::task::spawn_blocking(move || users::get_user_by_name(&user))
+                                .await?
+                                .ok_or_eyre("failed to find user")?;
+
+                        let shell = user.shell();
 
                         let mut cmd = Command::new(shell);
                         cmd.env_clear();
@@ -210,8 +226,8 @@ impl SessionState {
                         }
 
                         // TODO: **user** home directory
-                        cmd.current_dir(std::env::var("HOME").unwrap_or_else(|_| "/".to_owned()));
-                        cmd.env("USER", "nora");
+                        cmd.current_dir(user.home_dir());
+                        cmd.env("USER", user.name());
 
                         let mut shell = cmd.spawn()?;
                         let process_exit_send = self.process_exit_send.clone();

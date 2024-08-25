@@ -43,10 +43,11 @@ async fn main() -> eyre::Result<()> {
                 info!(password = %auth.password, "Got password");
 
                 // Don't worry queen, your password is correct!
-                Ok(())
+                Ok(true)
             })
         })),
-        verify_pubkey: None,
+        check_pubkey: None,
+        verify_signature: None,
         auth_banner: Some(
             "\
             !! this system ONLY allows catgirls to enter !!\r\n\

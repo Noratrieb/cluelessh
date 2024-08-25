@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use cluelessh_protocol::{
-    auth::{AuthOption, VerifyPassword, VerifyPubkey},
+    auth::{AuthOption, CheckPubkey, VerifyPassword, VerifySignature},
     ChannelUpdateKind, SshStatus,
 };
 use eyre::{eyre, ContextCompat, OptionExt, Result, WrapErr};
@@ -49,16 +49,18 @@ pub struct ServerConnection<S> {
 }
 
 enum Operation {
-    VerifyPassword(Result<()>),
-    VerifyPubkey(Result<()>),
+    VerifyPassword(String, Result<bool>),
+    CheckPubkey(Result<bool>, Vec<u8>, Vec<u8>),
+    VerifySignature(String, Result<bool>),
 }
+
+pub type AuthFn<A, R> = Arc<dyn Fn(A) -> BoxFuture<'static, R> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ServerAuthVerify {
-    pub verify_password:
-        Option<Arc<dyn Fn(VerifyPassword) -> BoxFuture<'static, Result<()>> + Send + Sync>>,
-    pub verify_pubkey:
-        Option<Arc<dyn Fn(VerifyPubkey) -> BoxFuture<'static, Result<()>> + Send + Sync>>,
+    pub verify_password: Option<AuthFn<VerifyPassword, Result<bool>>>,
+    pub verify_signature: Option<AuthFn<VerifySignature, Result<bool>>>,
+    pub check_pubkey: Option<AuthFn<CheckPubkey, Result<bool>>>,
     pub auth_banner: Option<String>,
 }
 fn _assert_send_sync() {
@@ -104,13 +106,18 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
         if auth_verify.verify_password.is_some() {
             options.insert(AuthOption::Password);
         }
-        if auth_verify.verify_pubkey.is_some() {
+        if auth_verify.verify_signature.is_some() {
             options.insert(AuthOption::PublicKey);
         }
 
         if options.is_empty() {
             panic!("no auth options provided");
         }
+        assert_eq!(
+            auth_verify.check_pubkey.is_some(),
+            auth_verify.verify_signature.is_some(),
+            "Public key auth only partially supported"
+        );
 
         Self {
             stream: Box::pin(stream),
@@ -151,20 +158,42 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
                             .clone()
                             .ok_or_eyre("password auth not supported")?;
                         tokio::spawn(async move {
-                            let result = verify(password_verify).await;
-                            let _ = send.send(Operation::VerifyPassword(result)).await;
+                            let result = verify(password_verify.clone()).await;
+                            let _ = send
+                                .send(Operation::VerifyPassword(password_verify.user, result))
+                                .await;
                         });
                     }
-                    cluelessh_protocol::auth::ServerRequest::VerifyPubkey(pubkey_verify) => {
+                    cluelessh_protocol::auth::ServerRequest::CheckPubkey(check_pubkey) => {
                         let send = self.operations_send.clone();
-                        let verify = self
+                        let check = self
                             .auth_verify
-                            .verify_pubkey
+                            .check_pubkey
                             .clone()
                             .ok_or_eyre("pubkey auth not supported")?;
                         tokio::spawn(async move {
-                            let result = verify(pubkey_verify).await;
-                            let _ = send.send(Operation::VerifyPubkey(result)).await;
+                            let result = check(check_pubkey.clone()).await;
+                            let _ = send
+                                .send(Operation::CheckPubkey(
+                                    result,
+                                    check_pubkey.pubkey_alg_name,
+                                    check_pubkey.pubkey,
+                                ))
+                                .await;
+                        });
+                    }
+                    cluelessh_protocol::auth::ServerRequest::VerifySignature(pubkey_verify) => {
+                        let send = self.operations_send.clone();
+                        let verify = self
+                            .auth_verify
+                            .verify_signature
+                            .clone()
+                            .ok_or_eyre("pubkey auth not supported")?;
+                        tokio::spawn(async move {
+                            let result = verify(pubkey_verify.clone()).await;
+                            let _ = send
+                                .send(Operation::VerifySignature(pubkey_verify.user, result))
+                                .await;
                         });
                     }
                 }
@@ -279,11 +308,14 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
             }
             op = self.operations_recv.recv() => {
                 match op {
-                    Some(Operation::VerifyPubkey(result)) => if let Some(auth) = self.proto.auth() {
-                        auth.verification_result(result.is_ok());
+                    Some(Operation::VerifySignature(user, result)) => if let Some(auth) = self.proto.auth() {
+                        auth.verification_result(result?, user);
                     },
-                    Some(Operation::VerifyPassword(result)) => if let Some(auth) = self.proto.auth() {
-                        auth.verification_result(result.is_ok());
+                    Some(Operation::CheckPubkey(result, alg, key_blob)) => if let Some(auth) = self.proto.auth() {
+                        auth.pubkey_check_result(result?, &alg, &key_blob);
+                    },
+                    Some(Operation::VerifyPassword(user, result)) => if let Some(auth) = self.proto.auth() {
+                        auth.verification_result(result?, user);
                     },
                     None => {}
                 }
@@ -335,5 +367,9 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
 
     pub fn next_new_channel(&mut self) -> Option<Channel> {
         self.new_channels.pop_front()
+    }
+
+    pub fn inner(&self) -> &cluelessh_protocol::ServerConnection {
+        &self.proto
     }
 }

@@ -32,6 +32,7 @@ pub const SSH_MSG_USERAUTH_SUCCESS: u8 = 52;
 pub const SSH_MSG_USERAUTH_BANNER: u8 = 53;
 
 //  60 to 79   User authentication method specific (numbers can be reused for different authentication methods)
+pub const SSH_MSG_USERAUTH_PK_OK: u8 = 60;
 
 // -----
 // Connection protocol:
@@ -70,6 +71,7 @@ pub fn packet_type_to_string(packet_type: u8) -> &'static str {
         51 => "SSH_MSG_USERAUTH_FAILURE",
         52 => "SSH_MSG_USERAUTH_SUCCESS",
         53 => "SSH_MSG_USERAUTH_BANNER",
+        60 => "SSH_MSG_USERAUTH_PK_OK",
         80 => "SSH_MSG_GLOBAL_REQUEST",
         81 => "SSH_MSG_REQUEST_SUCCESS",
         82 => "SSH_MSG_REQUEST_FAILURE",
