@@ -8,10 +8,13 @@ cluelessh-agent-client = { path = "../../lib/cluelessh-agent-client" }
 cluelessh-transport = { path = "../../lib/cluelessh-transport" } 
 
 clap = { version = "4.5.16", features = ["derive"] }
-eyre = "0.6.12"
+eyre.workspace = true
 tokio = { version = "1.39.3", features = ["full"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 rpassword = "7.3.1"
 sha2 = "0.10.8"
 hex = "0.4.3"
 pem = "3.0.4"
+
+[lints]
+workspace = true

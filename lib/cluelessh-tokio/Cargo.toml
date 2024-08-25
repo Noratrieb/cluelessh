@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eyre = "0.6.12"
+eyre.workspace = true
 cluelessh-transport = { path = "../cluelessh-transport" }
 cluelessh-connection = { path = "../cluelessh-connection" }
 cluelessh-protocol = { path = "../cluelessh-protocol" }
 tokio = { version = "1.39.3", features = ["net"] }
 tracing.workspace = true
 futures = "0.3.30"
+
+[lints]
+workspace = true

@@ -59,11 +59,10 @@ async fn main() -> eyre::Result<()> {
                 let destination = args.destination.clone();
                 Box::pin(async {
                     let result = tokio::task::spawn_blocking(move || {
-                        let password = rpassword::prompt_password(format!(
+                        rpassword::prompt_password(format!(
                             "{}@{}'s password: ",
                             username, destination
-                        ));
-                        password
+                        ))
                     })
                     .await?;
                     result.wrap_err("failed to prompt password")

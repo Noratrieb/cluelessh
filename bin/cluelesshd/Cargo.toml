@@ -7,3 +7,6 @@ edition = "2021"
 cluelessh-protocol = { path = "../../lib/cluelessh-protocol" }
 cluelessh-tokio = { path = "../../lib/cluelessh-tokio" }
 cluelessh-transport = { path = "../../lib/cluelessh-transport" }
+
+[lints]
+workspace = true

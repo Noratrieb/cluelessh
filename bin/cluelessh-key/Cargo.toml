@@ -5,10 +5,13 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.16", features = ["derive"] }
-eyre = "0.6.12"
+eyre.workspace = true
 tracing.workspace = true
 
 cluelessh-keys = { path = "../../lib/cluelessh-keys" }
 base64 = "0.22.1"
 rpassword = "7.3.1"
 pem = "3.0.4"
+
+[lints]
+workspace = true

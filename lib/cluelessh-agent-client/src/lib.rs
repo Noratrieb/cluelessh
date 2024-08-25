@@ -45,7 +45,7 @@ impl Request {
             } => {
                 p.u8(numbers::SSH_AGENTC_ADD_IDENTITY);
                 p.string(key_type.as_bytes());
-                p.raw(&key_contents);
+                p.raw(key_contents);
                 p.string(key_comment.as_bytes());
             }
             Self::RemoveAllIdentities => p.u8(numbers::SSH_AGENTC_REMOVE_ALL_IDENTITIES),
@@ -56,8 +56,8 @@ impl Request {
                 flags,
             } => {
                 p.u8(numbers::SSH_AGENTC_SIGN_REQUEST);
-                p.string(&key_blob);
-                p.string(&data);
+                p.string(key_blob);
+                p.string(data);
                 p.u32(*flags);
             }
             Self::Lock { passphrase } => {
@@ -186,7 +186,7 @@ impl AgentConnection {
         mut bytes: &'a [u8],
     ) -> impl Iterator<Item = eyre::Result<ServerResponse>> + 'a {
         std::iter::from_fn(move || -> Option<eyre::Result<ServerResponse>> {
-            if bytes.len() == 0 {
+            if bytes.is_empty() {
                 return None;
             }
             match self.packets.recv_plaintext_bytes(bytes) {

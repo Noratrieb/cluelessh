@@ -11,3 +11,6 @@ ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
 pem = "3.0.4"
 rand = "0.8.5"
 cluelessh-transport = { path = "../cluelessh-transport" }
+
+[lints]
+workspace = true

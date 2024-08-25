@@ -22,3 +22,6 @@ base64 = "0.22.1"
 
 [dev-dependencies]
 hex-literal = "0.4.1"
+
+[lints]
+workspace = true

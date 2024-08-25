@@ -29,7 +29,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn remaining(&self) -> &[u8] {
-        &self.0
+        self.0
     }
 
     pub fn has_data(&self) -> bool {

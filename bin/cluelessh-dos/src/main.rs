@@ -110,7 +110,7 @@ async fn execute_attempt_inner(mut conn: TcpStream) -> eyre::Result<()> {
                 .wrap_err("writing response")?;
         }
 
-        if let Some(_) = state.auth() {
+        if state.auth().is_some() {
             unreachable!();
         }
 

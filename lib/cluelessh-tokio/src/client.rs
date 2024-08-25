@@ -3,7 +3,7 @@ use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use cluelessh_protocol::{ChannelUpdateKind, SshStatus};
-use eyre::{bail, ContextCompat, OptionExt, Result, WrapErr};
+use eyre::{bail, ContextCompat, Result, WrapErr};
 use futures::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, info, warn};

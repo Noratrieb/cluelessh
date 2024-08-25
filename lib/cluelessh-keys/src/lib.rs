@@ -92,12 +92,12 @@ impl EncryptedPrivateKeys {
         p.array(*MAGIC);
         p.string(self.cipher.name().as_bytes());
         p.string(self.kdf.name().as_bytes());
-        p.string(&self.kdf.options());
+        p.string(self.kdf.options());
 
         p.u32(self.public_keys.len() as u32);
 
         for pubkey in &self.public_keys {
-            p.string(&pubkey.to_wire_encoding());
+            p.string(pubkey.to_wire_encoding());
         }
 
         p.string(&self.encrypted_private_keys);
@@ -124,7 +124,7 @@ impl EncryptedPrivateKeys {
             let mut output = vec![0; key_size + iv_size];
             self.kdf.derive(passphrase, &mut output)?;
             let (key, iv) = output.split_at(key_size);
-            self.cipher.crypt_in_place(&mut data, &key, &iv);
+            self.cipher.crypt_in_place(&mut data, key, iv);
         }
         Ok(data)
     }
@@ -254,12 +254,12 @@ impl PlaintextPrivateKey {
             } => {
                 // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#section-3.2.3>
                 enc.string(b"ssh-ed25519");
-                enc.string(&public_key);
+                enc.string(public_key);
                 let combined = private_key.len() + public_key.len();
                 enc.u32(combined as u32);
                 enc.raw(&private_key);
                 enc.raw(&public_key);
-                enc.string(&self.comment.as_bytes());
+                enc.string(self.comment.as_bytes());
             }
         }
 
@@ -282,7 +282,7 @@ impl PlaintextPrivateKey {
                 let (key, iv) = output.split_at(key_size);
                 params
                     .cipher
-                    .crypt_in_place(&mut encrypted_private_keys, &key, &iv);
+                    .crypt_in_place(&mut encrypted_private_keys, key, iv);
             }
         }
 

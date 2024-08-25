@@ -7,7 +7,7 @@ edition = "2021"
 cluelessh-protocol = { path = "../../lib/cluelessh-protocol" }
 cluelessh-transport = { path = "../../lib/cluelessh-transport" }
 clap = { version = "4.5.15", features = ["derive"] }
-eyre = "0.6.12"
+eyre.workspace = true
 rand = "0.8.5"
 tokio = { version = "1.39.2", features = ["full"] }
 tracing-subscriber = { version = "0.3.18", features = ["json", "env-filter"] }
@@ -15,3 +15,6 @@ tracing-subscriber = { version = "0.3.18", features = ["json", "env-filter"] }
 tracing.workspace = true
 rpassword = "7.3.1"
 futures = "0.3.30"
+
+[lints]
+workspace = true

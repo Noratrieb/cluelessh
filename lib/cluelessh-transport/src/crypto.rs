@@ -152,7 +152,7 @@ pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
             // <https://datatracker.ietf.org/doc/html/rfc8709#section-6>
             let mut data = Writer::new();
             data.string(b"ssh-ed25519");
-            data.string(&signature.to_bytes());
+            data.string(signature.to_bytes());
             EncodedSshSignature(data.finish())
         },
         verify: |public_key, message, signature| {
@@ -216,7 +216,7 @@ pub fn hostkey_ecdsa_sha2_p256(hostkey_private: Vec<u8>) -> HostKeySigningAlgori
             let mut signature_blob = Writer::new();
             signature_blob.mpint(p256::U256::from(r.as_ref()));
             signature_blob.mpint(p256::U256::from(s.as_ref()));
-            data.string(&signature_blob.finish());
+            data.string(signature_blob.finish());
             EncodedSshSignature(data.finish())
         },
         verify: |_public_key, _message, _signature| todo!("ecdsa p256 verification"),

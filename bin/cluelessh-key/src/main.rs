@@ -113,7 +113,7 @@ fn info(id_file: &Path, decrypt: bool, show_private: bool) -> eyre::Result<()> {
     }
 
     let file =
-        std::fs::read(&id_file).wrap_err_with(|| format!("reading file {}", id_file.display()))?;
+        std::fs::read(id_file).wrap_err_with(|| format!("reading file {}", id_file.display()))?;
 
     let keys = cluelessh_keys::EncryptedPrivateKeys::parse(&file)?;
 

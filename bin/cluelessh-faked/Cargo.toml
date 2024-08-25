@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eyre = "0.6.12"
+eyre.workspace = true
 hex-literal = "0.4.1"
 rand = "0.8.5"
 cluelessh-protocol = { path = "../../lib/cluelessh-protocol" }

@@ -9,3 +9,5 @@ cluelessh-connection = { path = "../cluelessh-connection" }
 cluelessh-transport = { path = "../cluelessh-transport" }
 tracing.workspace = true
 
+[lints]
+workspace = true

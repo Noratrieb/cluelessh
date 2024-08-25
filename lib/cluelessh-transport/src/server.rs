@@ -99,6 +99,26 @@ impl ServerConnection {
 
                     return Err(SshStatus::Disconnect);
                 }
+                Some(numbers::SSH_MSG_IGNORE) => {
+                    // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.2>
+                    let mut p = Parser::new(&packet.payload[1..]);
+                    let _ = p.string()?;
+                    continue;
+                }
+                Some(numbers::SSH_MSG_DEBUG) => {
+                    // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.3>
+                    let mut p = Parser::new(&packet.payload[1..]);
+                    let always_display = p.bool()?;
+                    let msg = p.utf8_string()?;
+                    let _language_tag = p.utf8_string()?;
+
+                    if always_display {
+                        info!(%msg, "Received debug message (SSH_MSG_DEBUG)");
+                    } else {
+                        debug!(%msg, "Received debug message (SSH_MSG_DEBUG)")
+                    }
+                    continue;
+                }
                 _ => {}
             }
 
