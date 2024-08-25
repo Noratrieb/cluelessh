@@ -2,9 +2,10 @@ use std::{collections::HashSet, sync::Arc};
 
 use clap::Parser;
 
-use eyre::{bail, Context, ContextCompat, OptionExt, Result};
-use cluelessh_tokio::client::{PendingChannel, SignatureResult};
+use cluelessh_tokio::client::SignatureResult;
+use cluelessh_tokio::PendingChannel;
 use cluelessh_transport::{key::PublicKey, numbers, parse::Writer};
+use eyre::{bail, Context, ContextCompat, OptionExt, Result};
 use tokio::net::TcpStream;
 use tracing::{debug, error};
 
@@ -140,7 +141,7 @@ async fn main_channel(channel: PendingChannel) -> Result<()> {
     };
 
     channel
-        .send_operation(ChannelOperationKind::Request(ChannelRequest::PtyReq {
+        .send(ChannelOperationKind::Request(ChannelRequest::PtyReq {
             want_reply: true,
             term: "xterm-256color".to_owned(),
             width_chars: 70,

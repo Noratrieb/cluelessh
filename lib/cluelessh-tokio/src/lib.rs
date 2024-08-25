@@ -31,3 +31,25 @@ impl Channel {
         &self.kind
     }
 }
+
+enum ChannelState {
+    Pending {
+        ready_send: tokio::sync::oneshot::Sender<Result<(), String>>,
+        updates_send: tokio::sync::mpsc::Sender<ChannelUpdateKind>,
+    },
+    Ready(tokio::sync::mpsc::Sender<ChannelUpdateKind>),
+}
+
+pub struct PendingChannel {
+    ready_recv: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    channel: Channel,
+}
+impl PendingChannel {
+    pub async fn wait_ready(self) -> Result<Channel, Option<String>> {
+        match self.ready_recv.await {
+            Ok(Ok(())) => Ok(self.channel),
+            Ok(Err(err)) => Err(Some(err)),
+            Err(_) => Err(None),
+        }
+    }
+}

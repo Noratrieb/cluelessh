@@ -1,4 +1,4 @@
-use cluelessh_connection::{ChannelKind, ChannelNumber, ChannelOperation, ChannelOperationKind};
+use cluelessh_connection::{ChannelKind, ChannelNumber, ChannelOperation};
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, info, warn};
 
-use crate::Channel;
+use crate::{Channel, ChannelState, PendingChannel};
 
 pub struct ClientConnection<S> {
     stream: Pin<Box<S>>,
@@ -27,14 +27,6 @@ pub struct ClientConnection<S> {
     auth: ClientAuth,
 }
 
-enum ChannelState {
-    Pending {
-        ready_send: tokio::sync::oneshot::Sender<Result<(), String>>,
-        updates_send: tokio::sync::mpsc::Sender<ChannelUpdateKind>,
-    },
-    Ready(tokio::sync::mpsc::Sender<ChannelUpdateKind>),
-}
-
 pub struct ClientAuth {
     pub username: String,
     pub prompt_password: Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + Send + Sync>,
@@ -51,11 +43,6 @@ pub struct SignatureResult {
     pub key_alg_name: &'static str,
     pub public_key: Vec<u8>,
     pub signature: Vec<u8>,
-}
-
-pub struct PendingChannel {
-    ready_recv: tokio::sync::oneshot::Receiver<Result<(), String>>,
-    channel: Channel,
 }
 
 impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
@@ -270,24 +257,5 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
                 kind,
             },
         }
-    }
-}
-
-impl PendingChannel {
-    pub async fn wait_ready(self) -> Result<Channel, Option<String>> {
-        match self.ready_recv.await {
-            Ok(Ok(())) => Ok(self.channel),
-            Ok(Err(err)) => Err(Some(err)),
-            Err(_) => Err(None),
-        }
-    }
-}
-
-impl Channel {
-    pub async fn send_operation(&mut self, op: ChannelOperationKind) -> Result<()> {
-        self.ops_send
-            .send(self.number.construct_op(op))
-            .await
-            .map_err(Into::into)
     }
 }

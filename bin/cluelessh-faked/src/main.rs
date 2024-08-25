@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use cluelessh_tokio::Channel;
+use cluelessh_tokio::{server::ServerAuthVerify, Channel};
 use eyre::{Context, Result};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -37,7 +37,19 @@ async fn main() -> eyre::Result<()> {
 
     let listener = TcpListener::bind(addr).await.wrap_err("binding listener")?;
 
-    let mut listener = cluelessh_tokio::server::ServerListener::new(listener);
+    let auth_verify = ServerAuthVerify {
+        verify_password: Some(Arc::new(|auth| {
+            Box::pin(async move {
+                info!(password = %auth.password, "Got password");
+
+                // Don't worry queen, your password is correct!
+                Ok(())
+            })
+        })),
+        verify_pubkey: None,
+    };
+
+    let mut listener = cluelessh_tokio::server::ServerListener::new(listener, auth_verify);
 
     loop {
         let next = listener.accept().await?;

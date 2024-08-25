@@ -1,5 +1,8 @@
+use core::panic;
+use std::collections::HashSet;
 use std::mem;
 
+use auth::AuthOption;
 pub use cluelessh_connection as connection;
 use cluelessh_connection::ChannelOperation;
 pub use cluelessh_connection::{ChannelUpdate, ChannelUpdateKind};
@@ -21,32 +24,41 @@ pub struct ServerConnection {
 }
 
 enum ServerConnectionState {
-    Auth(auth::BadAuth),
+    Setup(HashSet<AuthOption>),
+    Auth(auth::ServerAuth),
     Open(cluelessh_connection::ChannelsState),
 }
 
 impl ServerConnection {
-    pub fn new(transport: cluelessh_transport::server::ServerConnection) -> Self {
+    pub fn new(
+        transport: cluelessh_transport::server::ServerConnection,
+        auth_options: HashSet<AuthOption>,
+    ) -> Self {
         Self {
             transport,
-            state: ServerConnectionState::Auth(auth::BadAuth::new()),
+            state: ServerConnectionState::Setup(auth_options),
         }
     }
 
     pub fn recv_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         self.transport.recv_bytes(bytes)?;
 
+        if let ServerConnectionState::Setup(options) = &mut self.state {
+            if let Some(session_ident) = self.transport.is_open() {
+                self.state = ServerConnectionState::Auth(auth::ServerAuth::new(
+                    mem::take(options),
+                    session_ident,
+                ));
+            }
+        }
+
         while let Some(packet) = self.transport.next_plaintext_packet() {
             match &mut self.state {
+                ServerConnectionState::Setup(_) => unreachable!(),
                 ServerConnectionState::Auth(auth) => {
                     auth.recv_packet(packet)?;
                     for to_send in auth.packets_to_send() {
                         self.transport.send_plaintext_packet(to_send);
-                    }
-                    if auth.is_authenticated() {
-                        self.state = ServerConnectionState::Open(
-                            cluelessh_connection::ChannelsState::new(true),
-                        );
                     }
                 }
                 ServerConnectionState::Open(con) => {
@@ -66,14 +78,16 @@ impl ServerConnection {
 
     pub fn next_channel_update(&mut self) -> Option<cluelessh_connection::ChannelUpdate> {
         match &mut self.state {
-            ServerConnectionState::Auth(_) => None,
+            ServerConnectionState::Setup(_) | ServerConnectionState::Auth(_) => None,
             ServerConnectionState::Open(con) => con.next_channel_update(),
         }
     }
 
     pub fn do_operation(&mut self, op: ChannelOperation) {
         match &mut self.state {
-            ServerConnectionState::Auth(_) => panic!("tried to get connection during auth"),
+            ServerConnectionState::Setup(_) | ServerConnectionState::Auth(_) => {
+                panic!("tried to get connection before it is ready")
+            }
             ServerConnectionState::Open(con) => {
                 con.do_operation(op);
                 self.progress();
@@ -83,9 +97,14 @@ impl ServerConnection {
 
     pub fn progress(&mut self) {
         match &mut self.state {
+            ServerConnectionState::Setup(_) => {}
             ServerConnectionState::Auth(auth) => {
                 for to_send in auth.packets_to_send() {
                     self.transport.send_plaintext_packet(to_send);
+                }
+                if auth.is_authenticated() {
+                    self.state =
+                        ServerConnectionState::Open(cluelessh_connection::ChannelsState::new(true));
                 }
             }
             ServerConnectionState::Open(con) => {
@@ -103,7 +122,7 @@ impl ServerConnection {
         }
     }
 
-    pub fn auth(&mut self) -> Option<&mut auth::BadAuth> {
+    pub fn auth(&mut self) -> Option<&mut auth::ServerAuth> {
         match &mut self.state {
             ServerConnectionState::Auth(auth) => Some(auth),
             _ => None,
@@ -140,11 +159,10 @@ impl ClientConnection {
             if let Some(session_ident) = self.transport.is_open() {
                 let mut auth = mem::take(auth).unwrap();
                 auth.set_session_identifier(session_ident);
-                for to_send in auth.packets_to_send() {
-                    self.transport.send_plaintext_packet(to_send);
-                }
+
                 debug!("Connection has been opened");
                 self.state = ClientConnectionState::Auth(auth);
+                self.progress();
             }
         }
 
@@ -235,35 +253,53 @@ impl ClientConnection {
 
 /// <https://datatracker.ietf.org/doc/html/rfc4252>
 pub mod auth {
-    use std::collections::VecDeque;
+    use std::collections::{HashSet, VecDeque};
 
     use cluelessh_transport::{numbers, packet::Packet, parse::NameList, peer_error, Result};
     use tracing::{debug, info};
 
-    pub struct BadAuth {
+    pub struct ServerAuth {
         has_failed: bool,
         packets_to_send: VecDeque<Packet>,
         is_authenticated: bool,
+        options: HashSet<AuthOption>,
+
+        server_requests: VecDeque<ServerRequest>,
+        session_ident: [u8; 32],
     }
 
     pub enum ServerRequest {
-        VerifyPassword {
-            user: String,
-            password: String,
-        },
-        VerifyPubkey {
-            session_identifier: [u8; 32],
-            user: String,
-            pubkey: Vec<u8>,
-        },
+        VerifyPassword(VerifyPassword),
+        VerifyPubkey(VerifyPubkey),
     }
 
-    impl BadAuth {
-        pub fn new() -> Self {
+    pub struct VerifyPassword {
+        pub user: String,
+        pub password: String,
+    }
+    pub struct VerifyPubkey {
+        pub user: String,
+        pub session_identifier: [u8; 32],
+        pub pubkey_alg_name: Vec<u8>,
+        pub pubkey: Vec<u8>,
+        pub signature: Vec<u8>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    pub enum AuthOption {
+        Password,
+        PublicKey,
+    }
+
+    impl ServerAuth {
+        pub fn new(options: HashSet<AuthOption>, session_ident: [u8; 32]) -> Self {
             Self {
                 has_failed: false,
                 packets_to_send: VecDeque::new(),
+                options,
                 is_authenticated: false,
+                session_ident,
+                server_requests: VecDeque::new(),
             }
         }
 
@@ -274,14 +310,14 @@ pub mod auth {
             // We ask for a public key, and always let that one pass.
             // The reason for this is that this makes it a lot easier to test locally.
             // It's not very good, but it's good enough for now.
-            let mut auth_req = packet.payload_parser();
+            let mut p = packet.payload_parser();
 
-            if auth_req.u8()? != numbers::SSH_MSG_USERAUTH_REQUEST {
+            if p.u8()? != numbers::SSH_MSG_USERAUTH_REQUEST {
                 return Err(peer_error!("did not send SSH_MSG_SERVICE_REQUEST"));
             }
-            let username = auth_req.utf8_string()?;
-            let service_name = auth_req.utf8_string()?;
-            let method_name = auth_req.utf8_string()?;
+            let username = p.utf8_string()?;
+            let service_name = p.utf8_string()?;
+            let method_name = p.utf8_string()?;
 
             if method_name != "none" {
                 info!(
@@ -300,22 +336,47 @@ pub mod auth {
 
             match method_name {
                 "password" => {
-                    let change_password = auth_req.bool()?;
+                    if !self.options.contains(&AuthOption::Password) {
+                        self.has_failed = true;
+                        self.send_failure();
+                    }
+
+                    let change_password = p.bool()?;
                     if change_password {
                         return Err(peer_error!("client tried to change password unprompted"));
                     }
-                    let password = auth_req.utf8_string()?;
+                    let password = p.utf8_string()?;
 
-                    info!(%password, "Got password");
-                    // Don't worry queen, your password is correct!
-                    self.queue_packet(Packet::new_msg_userauth_success());
-                    self.is_authenticated = true;
+                    self.server_requests
+                        .push_back(ServerRequest::VerifyPassword(VerifyPassword {
+                            user: username.to_owned(),
+                            password: password.to_owned(),
+                        }));
                 }
                 "publickey" => {
-                    info!("Got public key");
-                    // Don't worry queen, your key is correct!
-                    self.queue_packet(Packet::new_msg_userauth_success());
-                    self.is_authenticated = true;
+                    if !self.options.contains(&AuthOption::PublicKey) {
+                        self.has_failed = true;
+                        self.send_failure();
+                    }
+
+                    // Whether the client is just checking whether the public key is allowed.
+                    let is_check = p.bool()?;
+                    if is_check {
+                        todo!();
+                    }
+
+                    let pubkey_alg_name = p.string()?;
+                    let public_key_blob = p.string()?;
+                    let signature = p.string()?;
+
+                    self.server_requests
+                        .push_back(ServerRequest::VerifyPubkey(VerifyPubkey {
+                            user: username.to_owned(),
+                            session_identifier: self.session_ident,
+                            pubkey_alg_name: pubkey_alg_name.to_vec(),
+                            pubkey: public_key_blob.to_vec(),
+                            signature: signature.to_vec(),
+                        }));
                 }
                 _ if self.has_failed => {
                     return Err(peer_error!(
@@ -323,8 +384,7 @@ pub mod auth {
                     ));
                 }
                 _ => {
-                    // Initial.
-
+                    // Initial:
                     self.queue_packet(Packet::new_msg_userauth_banner(
                                 b"!! this system ONLY allows catgirls to enter !!\r\n\
                                 !! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n\
@@ -333,14 +393,21 @@ pub mod auth {
                                 b"",
                             ));
 
-                    self.queue_packet(Packet::new_msg_userauth_failure(
-                        NameList::one("password"),
-                        false,
-                    ));
+                    self.send_failure();
                     // Stay in the same state
                 }
             }
             Ok(())
+        }
+
+        pub fn verification_result(&mut self, is_ok: bool) {
+            if is_ok {
+                self.queue_packet(Packet::new_msg_userauth_success());
+                self.is_authenticated = true;
+            } else {
+                self.send_failure();
+                self.has_failed = true;
+            }
         }
 
         pub fn packets_to_send(&mut self) -> impl Iterator<Item = Packet> + '_ {
@@ -352,7 +419,25 @@ pub mod auth {
         }
 
         pub fn server_requests(&mut self) -> impl Iterator<Item = ServerRequest> + '_ {
-            [].into_iter()
+            self.server_requests.drain(..)
+        }
+
+        fn send_failure(&mut self) {
+            self.queue_packet(Packet::new_msg_userauth_failure(
+                NameList(&self.option_list()),
+                false,
+            ));
+        }
+
+        fn option_list(&self) -> String {
+            self.options
+                .iter()
+                .map(|op| match op {
+                    AuthOption::Password => "password",
+                    AuthOption::PublicKey => "publickey",
+                })
+                .collect::<Vec<&str>>()
+                .join(",")
         }
 
         fn queue_packet(&mut self, packet: Packet) {

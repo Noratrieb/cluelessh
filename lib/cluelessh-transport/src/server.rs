@@ -44,8 +44,12 @@ enum ServerState {
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },
-    ServiceRequest,
-    Open,
+    ServiceRequest {
+        session_ident: [u8; 32],
+    },
+    Open {
+        session_ident: [u8; 32],
+    },
 }
 
 impl ServerConnection {
@@ -289,9 +293,9 @@ impl ServerConnection {
                         *encryption_server_to_client,
                         true,
                     );
-                    self.state = ServerState::ServiceRequest {};
+                    self.state = ServerState::ServiceRequest { session_ident: *h };
                 }
-                ServerState::ServiceRequest => {
+                ServerState::ServiceRequest { session_ident } => {
                     // TODO: this should probably move out of here? unsure.
                     if packet.payload.first() != Some(&numbers::SSH_MSG_SERVICE_REQUEST) {
                         return Err(peer_error!("did not send SSH_MSG_SERVICE_REQUEST"));
@@ -312,14 +316,23 @@ impl ServerConnection {
                             writer.finish()
                         },
                     });
-                    self.state = ServerState::Open;
+                    self.state = ServerState::Open {
+                        session_ident: *session_ident,
+                    };
                 }
-                ServerState::Open => {
+                ServerState::Open { .. } => {
                     self.plaintext_packets.push_back(packet);
                 }
             }
         }
         Ok(())
+    }
+
+    pub fn is_open(&self) -> Option<[u8; 32]> {
+        match self.state {
+            ServerState::Open { session_ident } => Some(session_ident),
+            _ => None,
+        }
     }
 
     pub fn next_msg_to_send(&mut self) -> Option<Msg> {
