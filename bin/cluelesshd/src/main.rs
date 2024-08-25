@@ -105,7 +105,10 @@ async fn handle_connection(
             let user = conn.inner().authenticated_user().unwrap().to_owned();
             if *channel.kind() == ChannelKind::Session {
                 tokio::spawn(async move {
-                    let _ = handle_session_channel(user, channel).await;
+                    let result = handle_session_channel(user, channel).await;
+                    if let Err(err) = result {
+                        error!(?err);
+                    }
                 });
             } else {
                 warn!("Trying to open non-session channel");
@@ -228,8 +231,12 @@ impl SessionState {
                         // TODO: **user** home directory
                         cmd.current_dir(user.home_dir());
                         cmd.env("USER", user.name());
+                        cmd.uid(user.uid());
+                        cmd.gid(user.primary_group_id());
+                        debug!(cmd = %shell.display(), uid = %user.uid(), gid = %user.primary_group_id(), "Executing process");
 
                         let mut shell = cmd.spawn()?;
+
                         let process_exit_send = self.process_exit_send.clone();
                         tokio::spawn(async move {
                             let result = shell.wait().await;
