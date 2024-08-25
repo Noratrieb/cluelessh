@@ -1,7 +1,6 @@
 pub mod client;
 mod crypto;
 pub mod key;
-pub mod numbers;
 pub mod packet;
 pub mod server;
 
@@ -26,7 +25,6 @@ impl From<ParseError> for SshStatus {
         Self::PeerError(err.0)
     }
 }
-
 
 pub trait SshRng {
     fn fill_bytes(&mut self, dest: &mut [u8]);

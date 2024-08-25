@@ -46,8 +46,9 @@ impl EncryptedPrivateKeys {
         let content = if content.starts_with(b"openssh-key-v1") {
             content
         } else if content.starts_with(b"-----BEGIN OPENSSH PRIVATE KEY-----") {
-            pem = pem::parse(content)
-                .map_err(|err| cluelessh_format::ParseError(format!("invalid PEM format: {err}")))?;
+            pem = pem::parse(content).map_err(|err| {
+                cluelessh_format::ParseError(format!("invalid PEM format: {err}"))
+            })?;
             pem.contents()
         } else {
             return Err(cluelessh_format::ParseError("invalid SSH key".to_owned()));
@@ -115,7 +116,10 @@ impl EncryptedPrivateKeys {
         (!matches!(self.kdf, Kdf::None)) && (!matches!(self.cipher, Cipher::None))
     }
 
-    pub fn decrypt_encrypted_part(&self, passphrase: Option<&str>) -> cluelessh_format::Result<Vec<u8>> {
+    pub fn decrypt_encrypted_part(
+        &self,
+        passphrase: Option<&str>,
+    ) -> cluelessh_format::Result<Vec<u8>> {
         let mut data = self.encrypted_private_keys.clone();
         if self.requires_passphrase() {
             let Some(passphrase) = passphrase else {
@@ -145,7 +149,9 @@ impl EncryptedPrivateKeys {
         let checkint1 = p.u32()?;
         let checkint2 = p.u32()?;
         if checkint1 != checkint2 {
-            return Err(cluelessh_format::ParseError(format!("invalid key or password")));
+            return Err(cluelessh_format::ParseError(format!(
+                "invalid key or password"
+            )));
         }
 
         let mut result_keys = Vec::new();
@@ -246,7 +252,10 @@ impl PlaintextPrivateKey {
         }
     }
 
-    pub fn encrypt(&self, params: KeyEncryptionParams) -> cluelessh_format::Result<EncryptedPrivateKeys> {
+    pub fn encrypt(
+        &self,
+        params: KeyEncryptionParams,
+    ) -> cluelessh_format::Result<EncryptedPrivateKeys> {
         let public_keys = vec![self.private_key.public_key()];
 
         let mut enc = Writer::new();

@@ -324,6 +324,7 @@ dependencies = [
 name = "cluelessh-connection"
 version = "0.1.0"
 dependencies = [
+ "cluelessh-format",
  "cluelessh-transport",
  "tracing",
  "tracing-subscriber",

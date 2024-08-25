@@ -26,7 +26,10 @@ pub enum AuthError {
 
 impl UserPublicKey {
     /// Blocking!
-    pub async fn for_user_and_key(user: String, provided_key: &PublicKey) -> Result<Self, AuthError> {
+    pub async fn for_user_and_key(
+        user: String,
+        provided_key: &PublicKey,
+    ) -> Result<Self, AuthError> {
         let user = tokio::task::spawn_blocking(move || {
             users::get_user_by_name(&user).ok_or(AuthError::UnknownUser)
         })

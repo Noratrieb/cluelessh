@@ -81,14 +81,16 @@ impl Kdf {
                 let salt = opts.string()?;
                 let rounds = opts.u32()?;
                 Kdf::BCrypt {
-                    salt: salt
-                        .try_into()
-                        .map_err(|_| cluelessh_format::ParseError(format!("incorrect bcrypt salt len")))?,
+                    salt: salt.try_into().map_err(|_| {
+                        cluelessh_format::ParseError(format!("incorrect bcrypt salt len"))
+                    })?,
                     rounds,
                 }
             }
             _ => {
-                return Err(cluelessh_format::ParseError(format!("unsupported KDF: {kdfname}")));
+                return Err(cluelessh_format::ParseError(format!(
+                    "unsupported KDF: {kdfname}"
+                )));
             }
         };
         Ok(kdf)
@@ -113,12 +115,18 @@ impl Kdf {
         }
     }
 
-    pub(crate) fn derive(&self, passphrase: &str, output: &mut [u8]) -> cluelessh_format::Result<()> {
+    pub(crate) fn derive(
+        &self,
+        passphrase: &str,
+        output: &mut [u8],
+    ) -> cluelessh_format::Result<()> {
         match self {
             Self::None => unreachable!("should not attempt to derive passphrase from none"),
             Self::BCrypt { salt, rounds } => {
                 bcrypt_pbkdf::bcrypt_pbkdf(passphrase, salt, *rounds, output).map_err(|err| {
-                    cluelessh_format::ParseError(format!("error when performing key derivation: {err}"))
+                    cluelessh_format::ParseError(format!(
+                        "error when performing key derivation: {err}"
+                    ))
                 })
             }
         }

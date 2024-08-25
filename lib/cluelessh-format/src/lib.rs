@@ -1,3 +1,5 @@
+pub mod numbers;
+
 use core::str;
 use std::fmt::{Debug, Display};
 

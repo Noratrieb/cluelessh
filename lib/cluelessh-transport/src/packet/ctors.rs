@@ -29,7 +29,7 @@ macro_rules! ctors {
                 ) -> Packet {
                     let mut w = Writer::new();
 
-                    w.u8($crate::numbers::$msg_type);
+                    w.u8(cluelessh_format::numbers::$msg_type);
 
                     $(
                         w.$ssh_type($name);

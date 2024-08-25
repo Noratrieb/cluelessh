@@ -6,9 +6,10 @@ use crate::crypto::{
 use crate::packet::{
     KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, ProtocolIdentParser,
 };
-use cluelessh_format::{NameList, Reader, Writer};
-use crate::{numbers, Result};
+use crate::Result;
 use crate::{peer_error, Msg, SshRng, SshStatus};
+use cluelessh_format::numbers;
+use cluelessh_format::{NameList, Reader, Writer};
 use tracing::{debug, info, trace};
 
 // This is definitely who we are.
@@ -96,8 +97,7 @@ impl ServerConnection {
                     let description = disconnect.utf8_string()?;
                     let _language_tag = disconnect.utf8_string()?;
 
-                    let reason_string =
-                        numbers::disconnect_reason_to_string(reason).unwrap_or("<unknown>");
+                    let reason_string = numbers::disconnect_reason_to_string(reason);
 
                     info!(%reason, %reason_string, %description, "Client disconnecting");
 

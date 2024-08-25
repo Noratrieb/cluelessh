@@ -7,11 +7,10 @@ use crate::{
         self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeySigningAlgorithm,
         KeyExchangeSecret, SupportedAlgorithms,
     },
-    numbers,
     packet::{Packet, PacketTransport, ProtocolIdentParser},
     peer_error, Msg, Result, SshRng, SshStatus,
 };
-use cluelessh_format::{NameList, Reader, Writer};
+use cluelessh_format::{numbers, NameList, Reader, Writer};
 
 pub struct ClientConnection {
     state: ClientState,
@@ -111,8 +110,7 @@ impl ClientConnection {
                     let description = p.utf8_string()?;
                     let _language_tag = p.utf8_string()?;
 
-                    let reason_string =
-                        numbers::disconnect_reason_to_string(reason).unwrap_or("<unknown>");
+                    let reason_string = numbers::disconnect_reason_to_string(reason);
 
                     info!(%reason, %reason_string, %description, "Server disconnecting");
 

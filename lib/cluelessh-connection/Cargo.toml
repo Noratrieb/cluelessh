@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+cluelessh-format = { version = "0.1.0", path = "../cluelessh-format" }
 cluelessh-transport = { path = "../cluelessh-transport" }
 tracing.workspace = true
 

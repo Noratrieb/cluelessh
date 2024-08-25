@@ -6,9 +6,10 @@ use std::mem;
 use tracing::{debug, trace};
 
 use crate::crypto::{self, EncryptionAlgorithm, Keys, Plaintext, Session};
-use cluelessh_format::{NameList, Reader, Writer};
+use crate::peer_error;
 use crate::Result;
-use crate::{numbers, peer_error};
+use cluelessh_format::numbers;
+use cluelessh_format::{NameList, Reader, Writer};
 
 /// Frames the byte stream into packets.
 pub(crate) struct PacketTransport {

@@ -2,9 +2,10 @@ use std::cmp;
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, info, trace, warn};
 
+use cluelessh_format::numbers;
 use cluelessh_transport::packet::Packet;
+use cluelessh_transport::peer_error;
 use cluelessh_transport::Result;
-use cluelessh_transport::{numbers, peer_error};
 
 /// A channel number (on our side).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -728,7 +729,8 @@ impl ChannelOperation {
 
 #[cfg(test)]
 mod tests {
-    use cluelessh_transport::{numbers, packet::Packet};
+    use cluelessh_format::numbers;
+    use cluelessh_transport::packet::Packet;
 
     use crate::{ChannelNumber, ChannelOperation, ChannelOperationKind, ChannelsState};
 
