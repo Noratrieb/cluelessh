@@ -1,8 +1,6 @@
 use core::str;
 use std::fmt::{Debug, Display};
 
-use crate::SshStatus;
-
 #[derive(Debug)]
 pub struct ParseError(pub String);
 impl Display for ParseError {
@@ -12,18 +10,11 @@ impl Display for ParseError {
 }
 impl std::error::Error for ParseError {}
 
-impl From<ParseError> for SshStatus {
-    fn from(err: ParseError) -> Self {
-        Self::PeerError(err.0)
-    }
-}
-
 pub type Result<T, E = ParseError> = std::result::Result<T, E>;
 
-/// A simplified `byteorder` clone that emits client errors when the data is too short.
-pub struct Parser<'a>(&'a [u8]);
+pub struct Reader<'a>(&'a [u8]);
 
-impl<'a> Parser<'a> {
+impl<'a> Reader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         Self(data)
     }

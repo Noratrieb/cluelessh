@@ -266,7 +266,8 @@ impl ClientConnection {
 pub mod auth {
     use std::collections::{HashSet, VecDeque};
 
-    use cluelessh_transport::{numbers, packet::Packet, parse::NameList, peer_error, Result};
+    use cluelessh_format::NameList;
+    use cluelessh_transport::{numbers, packet::Packet, peer_error, Result};
     use tracing::{debug, info};
 
     pub struct ServerAuth {

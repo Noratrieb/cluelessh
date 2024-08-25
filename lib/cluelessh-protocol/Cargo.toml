@@ -8,6 +8,7 @@ rand = "0.8.5"
 cluelessh-connection = { path = "../cluelessh-connection" }
 cluelessh-transport = { path = "../cluelessh-transport" }
 tracing.workspace = true
+cluelessh-format = { version = "0.1.0", path = "../cluelessh-format" }
 
 [lints]
 workspace = true

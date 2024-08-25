@@ -1,11 +1,11 @@
 use crate::packet::Packet;
-use crate::parse::Writer;
+use cluelessh_format::Writer;
 
 #[allow(non_camel_case_types)]
 mod ssh_type_to_rust {
     pub(super) use {bool, u32, u8};
     pub(super) type string<'a> = &'a [u8];
-    pub(super) type name_list<'a> = crate::parse::NameList<'a>;
+    pub(super) type name_list<'a> = cluelessh_format::NameList<'a>;
 }
 
 macro_rules! ctors {

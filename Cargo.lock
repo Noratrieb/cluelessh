@@ -296,6 +296,7 @@ dependencies = [
 name = "cluelessh-agent-client"
 version = "0.1.0"
 dependencies = [
+ "cluelessh-format",
  "cluelessh-transport",
  "eyre",
  "tokio",
@@ -308,6 +309,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "cluelessh-agent-client",
+ "cluelessh-format",
  "cluelessh-transport",
  "eyre",
  "hex",
@@ -358,6 +360,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cluelessh-format"
+version = "0.1.0"
+dependencies = [
+ "crypto-bigint",
+]
+
+[[package]]
 name = "cluelessh-key"
 version = "0.1.0"
 dependencies = [
@@ -377,6 +386,7 @@ dependencies = [
  "aes",
  "base64",
  "bcrypt-pbkdf",
+ "cluelessh-format",
  "cluelessh-transport",
  "ctr",
  "ed25519-dalek",
@@ -390,6 +400,7 @@ name = "cluelessh-protocol"
 version = "0.1.0"
 dependencies = [
  "cluelessh-connection",
+ "cluelessh-format",
  "cluelessh-transport",
  "rand",
  "tracing",
@@ -416,6 +427,7 @@ dependencies = [
  "aes-gcm",
  "base64",
  "chacha20",
+ "cluelessh-format",
  "crypto-bigint",
  "ctr",
  "ed25519-dalek",

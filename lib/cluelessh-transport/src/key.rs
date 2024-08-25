@@ -7,7 +7,7 @@ use std::fmt::Display;
 use base64::Engine;
 use tracing::debug;
 
-use crate::parse::{self, ParseError, Parser, Writer};
+use cluelessh_format::{ParseError, Reader, Writer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PublicKey {
@@ -17,8 +17,8 @@ pub enum PublicKey {
 impl PublicKey {
     /// Parses an SSH public key from its wire encoding as specified in
     /// RFC4253, RFC5656, and RFC8709.
-    pub fn from_wire_encoding(bytes: &[u8]) -> parse::Result<Self> {
-        let mut p = Parser::new(bytes);
+    pub fn from_wire_encoding(bytes: &[u8]) -> cluelessh_format::Result<Self> {
+        let mut p = Reader::new(bytes);
         let alg = p.utf8_string()?;
 
         let k = match alg {
@@ -55,7 +55,7 @@ impl PublicKey {
     pub fn verify_signature(&self, data: &[u8], signature: &[u8]) -> bool {
         match self {
             PublicKey::Ed25519 { public_key } => {
-                let mut s = Parser::new(signature);
+                let mut s = Reader::new(signature);
                 let Ok(alg) = s.utf8_string() else {
                     return false;
                 };

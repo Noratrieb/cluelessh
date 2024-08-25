@@ -2,10 +2,8 @@ pub mod authorized_keys;
 mod crypto;
 pub mod signature;
 
-use cluelessh_transport::{
-    key::PublicKey,
-    parse::{self, Parser, Writer},
-};
+use cluelessh_format::{Reader, Writer};
+use cluelessh_transport::key::PublicKey;
 use crypto::{Cipher, Kdf};
 
 // TODO: good typed error messages so the user knows what's going on
@@ -42,24 +40,24 @@ const MAGIC: &[u8; 15] = b"openssh-key-v1\0";
 
 impl EncryptedPrivateKeys {
     /// Parse OpenSSH private keys, either armored or not.
-    pub fn parse(content: &[u8]) -> parse::Result<Self> {
+    pub fn parse(content: &[u8]) -> cluelessh_format::Result<Self> {
         // https://github.com/openssh/openssh-portable/blob/a76a6b85108e3032c8175611ecc5746e7131f876/PROTOCOL.key
         let pem: pem::Pem; // lifetime extension
         let content = if content.starts_with(b"openssh-key-v1") {
             content
         } else if content.starts_with(b"-----BEGIN OPENSSH PRIVATE KEY-----") {
             pem = pem::parse(content)
-                .map_err(|err| parse::ParseError(format!("invalid PEM format: {err}")))?;
+                .map_err(|err| cluelessh_format::ParseError(format!("invalid PEM format: {err}")))?;
             pem.contents()
         } else {
-            return Err(parse::ParseError("invalid SSH key".to_owned()));
+            return Err(cluelessh_format::ParseError("invalid SSH key".to_owned()));
         };
 
-        let mut p = Parser::new(content);
+        let mut p = Reader::new(content);
 
         let magic = p.array::<{ MAGIC.len() }>()?;
         if magic != *MAGIC {
-            return Err(parse::ParseError(
+            return Err(cluelessh_format::ParseError(
                 "invalid magic, not an SSH key?".to_owned(),
             ));
         }
@@ -117,14 +115,14 @@ impl EncryptedPrivateKeys {
         (!matches!(self.kdf, Kdf::None)) && (!matches!(self.cipher, Cipher::None))
     }
 
-    pub fn decrypt_encrypted_part(&self, passphrase: Option<&str>) -> parse::Result<Vec<u8>> {
+    pub fn decrypt_encrypted_part(&self, passphrase: Option<&str>) -> cluelessh_format::Result<Vec<u8>> {
         let mut data = self.encrypted_private_keys.clone();
         if self.requires_passphrase() {
             let Some(passphrase) = passphrase else {
                 panic!("missing passphrase for encrypted key");
             };
             if passphrase.is_empty() {
-                return Err(parse::ParseError(format!("empty passphrase")));
+                return Err(cluelessh_format::ParseError(format!("empty passphrase")));
             }
 
             let (key_size, iv_size) = self.cipher.key_iv_size();
@@ -140,14 +138,14 @@ impl EncryptedPrivateKeys {
     pub fn parse_private(
         &self,
         passphrase: Option<&str>,
-    ) -> parse::Result<Vec<PlaintextPrivateKey>> {
+    ) -> cluelessh_format::Result<Vec<PlaintextPrivateKey>> {
         let data = self.decrypt_encrypted_part(passphrase)?;
 
-        let mut p = Parser::new(&data);
+        let mut p = Reader::new(&data);
         let checkint1 = p.u32()?;
         let checkint2 = p.u32()?;
         if checkint1 != checkint2 {
-            return Err(parse::ParseError(format!("invalid key or password")));
+            return Err(cluelessh_format::ParseError(format!("invalid key or password")));
         }
 
         let mut result_keys = Vec::new();
@@ -158,17 +156,17 @@ impl EncryptedPrivateKeys {
                     // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#section-3.2.3>
                     let alg = p.utf8_string()?;
                     if alg != "ssh-ed25519" {
-                        return Err(parse::ParseError(format!(
+                        return Err(cluelessh_format::ParseError(format!(
                             "algorithm mismatch. pubkey: ssh-ed25519, privkey: {alg}"
                         )));
                     }
                     let enc_a = p.string()?; // ENC(A)
                     if enc_a != public_key {
-                        return Err(parse::ParseError(format!("public key mismatch")));
+                        return Err(cluelessh_format::ParseError(format!("public key mismatch")));
                     }
                     let k_enc_a = p.string()?; // k || ENC(A)
                     if k_enc_a.len() != 64 {
-                        return Err(parse::ParseError(format!(
+                        return Err(cluelessh_format::ParseError(format!(
                             "invalid len for ed25519 keypair: {}, expected 64",
                             k_enc_a.len()
                         )));
@@ -176,7 +174,7 @@ impl EncryptedPrivateKeys {
                     let (k, enc_a) = k_enc_a.split_at(32);
                     if enc_a != public_key {
                         // Yes, ed25519 SSH keys seriously store the public key THREE TIMES.
-                        return Err(parse::ParseError(format!("public key mismatch")));
+                        return Err(cluelessh_format::ParseError(format!("public key mismatch")));
                     }
                     let private_key = k.try_into().unwrap();
                     PrivateKeyType::Ed25519 {
@@ -200,7 +198,7 @@ impl EncryptedPrivateKeys {
             if p.has_data() {
                 let b = p.u8()?;
                 if b != i {
-                    return Err(parse::ParseError(format!(
+                    return Err(cluelessh_format::ParseError(format!(
                         "private key padding is incorrect: {b} != {i}"
                     )));
                 }
@@ -248,7 +246,7 @@ impl PlaintextPrivateKey {
         }
     }
 
-    pub fn encrypt(&self, params: KeyEncryptionParams) -> parse::Result<EncryptedPrivateKeys> {
+    pub fn encrypt(&self, params: KeyEncryptionParams) -> cluelessh_format::Result<EncryptedPrivateKeys> {
         let public_keys = vec![self.private_key.public_key()];
 
         let mut enc = Writer::new();

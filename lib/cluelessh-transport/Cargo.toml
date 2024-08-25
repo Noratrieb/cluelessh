@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+cluelessh-format = { path = "../cluelessh-format" }
 aes = "0.8.4"
 aes-gcm = "0.10.3"
 chacha20 = "0.9.1"

@@ -13,6 +13,7 @@ rand = "0.8.5"
 cluelessh-transport = { path = "../cluelessh-transport" }
 thiserror = "1.0.63"
 base64 = "0.22.1"
+cluelessh-format = { version = "0.1.0", path = "../cluelessh-format" }
 
 [lints]
 workspace = true

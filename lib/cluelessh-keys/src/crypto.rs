@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use aes::cipher::{KeySizeUser, StreamCipher};
-use cluelessh_transport::parse::{self, Parser, Writer};
+use cluelessh_format::{Reader, Writer};
 
 use crate::PrivateKeyType;
 
@@ -12,14 +12,14 @@ pub enum Cipher {
 }
 
 impl FromStr for Cipher {
-    type Err = parse::ParseError;
+    type Err = cluelessh_format::ParseError;
 
     fn from_str(ciphername: &str) -> Result<Self, Self::Err> {
         let cipher = match ciphername {
             "none" => Cipher::None,
             "aes256-ctr" => Cipher::Aes256Ctr,
             _ => {
-                return Err(parse::ParseError(format!(
+                return Err(cluelessh_format::ParseError(format!(
                     "unsupported cipher: {ciphername}"
                 )));
             }
@@ -66,29 +66,29 @@ impl Kdf {
     pub(crate) fn from_str_and_options(
         kdfname: &str,
         kdfoptions: &[u8],
-    ) -> Result<Self, parse::ParseError> {
+    ) -> Result<Self, cluelessh_format::ParseError> {
         let kdf = match kdfname {
             "none" => {
                 if !kdfoptions.is_empty() {
-                    return Err(parse::ParseError(format!(
+                    return Err(cluelessh_format::ParseError(format!(
                         "KDF options must be empty for none KDF"
                     )));
                 }
                 Kdf::None
             }
             "bcrypt" => {
-                let mut opts = Parser::new(kdfoptions);
+                let mut opts = Reader::new(kdfoptions);
                 let salt = opts.string()?;
                 let rounds = opts.u32()?;
                 Kdf::BCrypt {
                     salt: salt
                         .try_into()
-                        .map_err(|_| parse::ParseError(format!("incorrect bcrypt salt len")))?,
+                        .map_err(|_| cluelessh_format::ParseError(format!("incorrect bcrypt salt len")))?,
                     rounds,
                 }
             }
             _ => {
-                return Err(parse::ParseError(format!("unsupported KDF: {kdfname}")));
+                return Err(cluelessh_format::ParseError(format!("unsupported KDF: {kdfname}")));
             }
         };
         Ok(kdf)
@@ -113,12 +113,12 @@ impl Kdf {
         }
     }
 
-    pub(crate) fn derive(&self, passphrase: &str, output: &mut [u8]) -> parse::Result<()> {
+    pub(crate) fn derive(&self, passphrase: &str, output: &mut [u8]) -> cluelessh_format::Result<()> {
         match self {
             Self::None => unreachable!("should not attempt to derive passphrase from none"),
             Self::BCrypt { salt, rounds } => {
                 bcrypt_pbkdf::bcrypt_pbkdf(passphrase, salt, *rounds, output).map_err(|err| {
-                    parse::ParseError(format!("error when performing key derivation: {err}"))
+                    cluelessh_format::ParseError(format!("error when performing key derivation: {err}"))
                 })
             }
         }

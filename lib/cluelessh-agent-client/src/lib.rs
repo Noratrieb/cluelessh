@@ -1,9 +1,6 @@
+use cluelessh_format::{Reader, Writer};
+use cluelessh_transport::{packet::PacketParser, SshStatus};
 use eyre::{bail, eyre, Context};
-use cluelessh_transport::{
-    packet::PacketParser,
-    parse::{Parser, Writer},
-    SshStatus,
-};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, trace};
 
@@ -121,7 +118,7 @@ pub struct IdentityAnswer {
 impl ServerResponse {
     pub fn parse(bytes: &[u8]) -> eyre::Result<Self> {
         let bytes = &bytes[4..];
-        let mut p = Parser::new(bytes);
+        let mut p = Reader::new(bytes);
         let msg_type = p.u8()?;
         trace!(%msg_type, msg_type_str = %numbers::server_response_type_to_string(msg_type), "Received message");
         let resp = match msg_type {

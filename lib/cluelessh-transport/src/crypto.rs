@@ -1,11 +1,11 @@
 pub mod encrypt;
 
+use cluelessh_format::{Reader, Writer};
 use p256::ecdsa::signature::Signer;
 use sha2::Digest;
 
 use crate::{
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
-    parse::{self, Parser, Writer},
     peer_error, Msg, Result, SshRng,
 };
 
@@ -157,7 +157,7 @@ pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
         },
         verify: |public_key, message, signature| {
             // Parse out public key
-            let mut public_key = Parser::new(public_key);
+            let mut public_key = Reader::new(public_key);
             let public_key_alg = public_key.string()?;
             if public_key_alg != b"ssh-ed25519" {
                 return Err(peer_error!("incorrect algorithm public host key"));
@@ -170,7 +170,7 @@ pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
                 .map_err(|err| peer_error!("incorrect public host key: {err}"))?;
 
             // Parse out signature
-            let mut signature = Parser::new(&signature.0);
+            let mut signature = Reader::new(&signature.0);
             let alg = signature.string()?;
             if alg != b"ssh-ed25519" {
                 return Err(peer_error!("incorrect algorithm for signature"));
@@ -473,7 +473,7 @@ fn derive_key(
 }
 
 pub(crate) fn encode_mpint_for_hash(key: &[u8], mut add_to_hash: impl FnMut(&[u8])) {
-    let (key, pad_zero) = parse::fixup_mpint(key);
+    let (key, pad_zero) = cluelessh_format::fixup_mpint(key);
     add_to_hash(&u32::to_be_bytes((key.len() + (pad_zero as usize)) as u32));
     if pad_zero {
         add_to_hash(&[0]);

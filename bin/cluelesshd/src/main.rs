@@ -158,7 +158,6 @@ async fn handle_connection(
                 },
             },
             result = futures::future::try_join_all(&mut channel_tasks), if channel_tasks.len() > 0 => {
-                debug!(?result, "error!");
                 match result {
                     Ok(_) => channel_tasks.clear(),
                     Err(err) => return Err((err as eyre::Report).wrap_err("channel task failed")),

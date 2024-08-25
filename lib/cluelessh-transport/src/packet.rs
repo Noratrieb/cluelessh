@@ -6,7 +6,7 @@ use std::mem;
 use tracing::{debug, trace};
 
 use crate::crypto::{self, EncryptionAlgorithm, Keys, Plaintext, Session};
-use crate::parse::{NameList, Parser, Writer};
+use cluelessh_format::{NameList, Reader, Writer};
 use crate::Result;
 use crate::{numbers, peer_error};
 
@@ -214,8 +214,8 @@ impl Packet {
         new
     }
 
-    pub fn payload_parser(&self) -> Parser<'_> {
-        Parser::new(&self.payload)
+    pub fn payload_parser(&self) -> Reader<'_> {
+        Reader::new(&self.payload)
     }
 }
 
@@ -250,7 +250,7 @@ pub(crate) struct KeyExchangeInitPacket<'a> {
 
 impl<'a> KeyExchangeInitPacket<'a> {
     pub(crate) fn parse(payload: &'a [u8]) -> Result<KeyExchangeInitPacket<'_>> {
-        let mut c = Parser::new(payload);
+        let mut c = Reader::new(payload);
 
         let kind = c.u8()?;
         if kind != numbers::SSH_MSG_KEXINIT {
@@ -317,7 +317,7 @@ pub(crate) struct KeyExchangeEcDhInitPacket<'a> {
 }
 impl<'a> KeyExchangeEcDhInitPacket<'a> {
     pub(crate) fn parse(payload: &'a [u8]) -> Result<KeyExchangeEcDhInitPacket<'_>> {
-        let mut c = Parser::new(payload);
+        let mut c = Reader::new(payload);
 
         let kind = c.u8()?;
         if kind != numbers::SSH_MSG_KEX_ECDH_INIT {

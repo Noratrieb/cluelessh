@@ -6,7 +6,7 @@ use crate::crypto::{
 use crate::packet::{
     KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, ProtocolIdentParser,
 };
-use crate::parse::{NameList, Parser, Writer};
+use cluelessh_format::{NameList, Reader, Writer};
 use crate::{numbers, Result};
 use crate::{peer_error, Msg, SshRng, SshStatus};
 use tracing::{debug, info, trace};
@@ -91,7 +91,7 @@ impl ServerConnection {
             match packet.payload.first().copied() {
                 Some(numbers::SSH_MSG_DISCONNECT) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.1>
-                    let mut disconnect = Parser::new(&packet.payload[1..]);
+                    let mut disconnect = Reader::new(&packet.payload[1..]);
                     let reason = disconnect.u32()?;
                     let description = disconnect.utf8_string()?;
                     let _language_tag = disconnect.utf8_string()?;
@@ -105,13 +105,13 @@ impl ServerConnection {
                 }
                 Some(numbers::SSH_MSG_IGNORE) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.2>
-                    let mut p = Parser::new(&packet.payload[1..]);
+                    let mut p = Reader::new(&packet.payload[1..]);
                     let _ = p.string()?;
                     continue;
                 }
                 Some(numbers::SSH_MSG_DEBUG) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.3>
-                    let mut p = Parser::new(&packet.payload[1..]);
+                    let mut p = Reader::new(&packet.payload[1..]);
                     let always_display = p.bool()?;
                     let msg = p.utf8_string()?;
                     let _language_tag = p.utf8_string()?;
@@ -300,7 +300,7 @@ impl ServerConnection {
                     if packet.payload.first() != Some(&numbers::SSH_MSG_SERVICE_REQUEST) {
                         return Err(peer_error!("did not send SSH_MSG_SERVICE_REQUEST"));
                     }
-                    let mut p = Parser::new(&packet.payload[1..]);
+                    let mut p = Reader::new(&packet.payload[1..]);
                     let service = p.utf8_string()?;
                     debug!(%service, "Client requesting service");
 

@@ -3,9 +3,9 @@ mod crypto;
 pub mod key;
 pub mod numbers;
 pub mod packet;
-pub mod parse;
 pub mod server;
 
+use cluelessh_format::ParseError;
 pub use packet::Msg;
 
 #[derive(Debug)]
@@ -20,6 +20,13 @@ pub enum SshStatus {
 }
 
 pub type Result<T, E = SshStatus> = std::result::Result<T, E>;
+
+impl From<ParseError> for SshStatus {
+    fn from(err: ParseError) -> Self {
+        Self::PeerError(err.0)
+    }
+}
+
 
 pub trait SshRng {
     fn fill_bytes(&mut self, dest: &mut [u8]);

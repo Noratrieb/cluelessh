@@ -9,9 +9,9 @@ use crate::{
     },
     numbers,
     packet::{Packet, PacketTransport, ProtocolIdentParser},
-    parse::{NameList, Parser, Writer},
     peer_error, Msg, Result, SshRng, SshStatus,
 };
+use cluelessh_format::{NameList, Reader, Writer};
 
 pub struct ClientConnection {
     state: ClientState,
@@ -106,7 +106,7 @@ impl ClientConnection {
             match packet.payload.first().copied() {
                 Some(numbers::SSH_MSG_DISCONNECT) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.1>
-                    let mut p = Parser::new(&packet.payload[1..]);
+                    let mut p = Reader::new(&packet.payload[1..]);
                     let reason = p.u32()?;
                     let description = p.utf8_string()?;
                     let _language_tag = p.utf8_string()?;
@@ -120,13 +120,13 @@ impl ClientConnection {
                 }
                 Some(numbers::SSH_MSG_IGNORE) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.2>
-                    let mut p = Parser::new(&packet.payload[1..]);
+                    let mut p = Reader::new(&packet.payload[1..]);
                     let _ = p.string()?;
                     continue;
                 }
                 Some(numbers::SSH_MSG_DEBUG) => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.3>
-                    let mut p = Parser::new(&packet.payload[1..]);
+                    let mut p = Reader::new(&packet.payload[1..]);
                     let always_display = p.bool()?;
                     let msg = p.utf8_string()?;
                     let _language_tag = p.utf8_string()?;
