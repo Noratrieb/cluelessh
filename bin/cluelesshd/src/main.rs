@@ -7,6 +7,8 @@ use eyre::{bail, Context, OptionExt, Result};
 use pty::Pty;
 use rustix::termios::Winsize;
 use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::Command,
     sync::mpsc,
@@ -83,20 +85,31 @@ async fn handle_connection(
 ) -> Result<()> {
     info!(addr = %conn.peer_addr(), "Received a new connection");
 
+    let mut channel_tasks = Vec::new();
+
     loop {
-        match conn.progress().await {
-            Ok(()) => {}
-            Err(cluelessh_tokio::server::Error::ServerError(err)) => {
-                return Err(err);
-            }
-            Err(cluelessh_tokio::server::Error::SshStatus(status)) => match status {
-                SshStatus::PeerError(err) => {
-                    info!(?err, "disconnecting client after invalid operation");
-                    return Ok(());
+        tokio::select! {
+            step = conn.progress() => match step {
+                Ok(()) => {}
+                Err(cluelessh_tokio::server::Error::ServerError(err)) => {
+                    return Err(err);
                 }
-                SshStatus::Disconnect => {
-                    info!("Received disconnect from client");
-                    return Ok(());
+                Err(cluelessh_tokio::server::Error::SshStatus(status)) => match status {
+                    SshStatus::PeerError(err) => {
+                        info!(?err, "disconnecting client after invalid operation");
+                        return Ok(());
+                    }
+                    SshStatus::Disconnect => {
+                        info!("Received disconnect from client");
+                        return Ok(());
+                    }
+                },
+            },
+            result = futures::future::try_join_all(&mut channel_tasks), if channel_tasks.len() > 0 => {
+                debug!(?result, "error!");
+                match result {
+                    Ok(_) => channel_tasks.clear(),
+                    Err(err) => return Err(err as eyre::Report),
                 }
             },
         }
@@ -104,12 +117,11 @@ async fn handle_connection(
         while let Some(channel) = conn.next_new_channel() {
             let user = conn.inner().authenticated_user().unwrap().to_owned();
             if *channel.kind() == ChannelKind::Session {
-                tokio::spawn(async move {
-                    let result = handle_session_channel(user, channel).await;
-                    if let Err(err) = result {
-                        error!(?err);
-                    }
-                });
+                let channel_task = tokio::spawn(handle_session_channel(user, channel));
+                channel_tasks.push(Box::pin(async {
+                    let result = channel_task.await;
+                    result.wrap_err("task panicked").and_then(|result| result)
+                }));
             } else {
                 warn!("Trying to open non-session channel");
             }
@@ -123,6 +135,9 @@ struct SessionState {
     channel: Channel,
     process_exit_send: mpsc::Sender<Result<ExitStatus, io::Error>>,
     process_exit_recv: mpsc::Receiver<Result<ExitStatus, io::Error>>,
+
+    writer: Option<File>,
+    reader: Option<File>,
 }
 
 async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
@@ -134,12 +149,16 @@ async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
         channel,
         process_exit_send,
         process_exit_recv,
+        writer: None,
+        reader: None,
     };
 
+    let mut read_buf = [0; 1024];
+
     loop {
-        let pty_read = async {
-            match &mut state.pty {
-                Some(pty) => pty.ctrl_read_recv.recv().await,
+        let read = async {
+            match &mut state.reader {
+                Some(file) => file.read(&mut read_buf).await,
                 // Ensure that if this is None, the future never finishes so the state update and process exit can progress.
                 None => loop {
                     tokio::task::yield_now().await;
@@ -170,11 +189,11 @@ async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
                     None => {}
                 }
             }
-            read = pty_read => {
-                let Some(read) = read else {
+            read = read => {
+                let Ok(read) = read else {
                     bail!("failed to read");
                 };
-                let _ = state.channel.send(ChannelOperationKind::Data(read)).await;
+                let _ = state.channel.send(ChannelOperationKind::Data(read_buf[..read].to_vec())).await;
             }
         }
     }
@@ -184,7 +203,6 @@ impl SessionState {
     async fn handle_channel_update(&mut self, update: ChannelUpdateKind) -> Result<()> {
         match update {
             ChannelUpdateKind::Request(req) => {
-                let success = ChannelOperationKind::Success;
                 match req {
                     ChannelRequest::PtyReq {
                         want_reply,
@@ -195,8 +213,8 @@ impl SessionState {
                         height_px,
                         term_modes,
                     } => {
-                        self.pty = Some(
-                            pty::Pty::new(
+                        match self
+                            .pty_req(
                                 term,
                                 Winsize {
                                     ws_row: height_rows as u16,
@@ -206,46 +224,34 @@ impl SessionState {
                                 },
                                 term_modes,
                             )
-                            .await?,
-                        );
-                        if want_reply {
-                            self.channel.send(success).await?;
+                            .await
+                        {
+                            Ok(()) => {
+                                if want_reply {
+                                    self.channel.send(ChannelOperationKind::Success).await?;
+                                }
+                            }
+                            Err(err) => {
+                                debug!(%err, "Failed to open PTY");
+                                if want_reply {
+                                    self.channel.send(ChannelOperationKind::Failure).await?;
+                                }
+                            }
                         }
                     }
-                    ChannelRequest::Shell { want_reply } => {
-                        let user = self.user.clone();
-                        let user =
-                            tokio::task::spawn_blocking(move || users::get_user_by_name(&user))
-                                .await?
-                                .ok_or_eyre("failed to find user")?;
-
-                        let shell = user.shell();
-
-                        let mut cmd = Command::new(shell);
-                        cmd.env_clear();
-
-                        if let Some(pty) = &self.pty {
-                            pty.start_session_for_command(&mut cmd)?;
+                    ChannelRequest::Shell { want_reply } => match self.shell().await {
+                        Ok(()) => {
+                            if want_reply {
+                                self.channel.send(ChannelOperationKind::Success).await?;
+                            }
                         }
-
-                        // TODO: **user** home directory
-                        cmd.current_dir(user.home_dir());
-                        cmd.env("USER", user.name());
-                        cmd.uid(user.uid());
-                        cmd.gid(user.primary_group_id());
-                        debug!(cmd = %shell.display(), uid = %user.uid(), gid = %user.primary_group_id(), "Executing process");
-
-                        let mut shell = cmd.spawn()?;
-
-                        let process_exit_send = self.process_exit_send.clone();
-                        tokio::spawn(async move {
-                            let result = shell.wait().await;
-                            let _ = process_exit_send.send(result).await;
-                        });
-                        if want_reply {
-                            self.channel.send(success).await?;
+                        Err(err) => {
+                            debug!(%err, "Failed to spawn shell");
+                            if want_reply {
+                                self.channel.send(ChannelOperationKind::Failure).await?;
+                            }
                         }
-                    }
+                    },
                     ChannelRequest::Exec { .. } => {
                         todo!()
                     }
@@ -254,9 +260,9 @@ impl SessionState {
                 };
             }
             ChannelUpdateKind::OpenFailed { .. } => todo!(),
-            ChannelUpdateKind::Data { data } => match &mut self.pty {
+            ChannelUpdateKind::Data { data } => match &mut self.writer {
                 Some(pty) => {
-                    pty.ctrl_write_send.send(data).await?;
+                    pty.write_all(&data).await?;
                 }
                 None => {}
             },
@@ -267,6 +273,50 @@ impl SessionState {
             | ChannelUpdateKind::Success
             | ChannelUpdateKind::Failure => { /* ignore */ }
         }
+        Ok(())
+    }
+
+    async fn pty_req(&mut self, term: String, winsize: Winsize, term_modes: Vec<u8>) -> Result<()> {
+        let pty = pty::Pty::new(term, winsize, term_modes).await?;
+        let controller = pty.controller().try_clone_to_owned()?;
+
+        self.pty = Some(pty);
+        self.writer = Some(File::from_std(std::fs::File::from(controller.try_clone()?)));
+        self.reader = Some(File::from_std(std::fs::File::from(controller)));
+        Ok(())
+    }
+
+    async fn shell(&mut self) -> Result<()> {
+        let user = self.user.clone();
+        let user = tokio::task::spawn_blocking(move || users::get_user_by_name(&user))
+            .await?
+            .ok_or_eyre("failed to find user")?;
+
+        let shell = user.shell();
+
+        let mut cmd = Command::new(shell);
+        cmd.env_clear();
+
+        if let Some(pty) = &self.pty {
+            pty.start_session_for_command(&mut cmd)?;
+        }
+
+        // TODO: **user** home directory
+        cmd.current_dir(user.home_dir());
+        cmd.env("USER", user.name());
+        cmd.uid(user.uid());
+        cmd.gid(user.primary_group_id());
+
+        debug!(cmd = %shell.display(), uid = %user.uid(), gid = %user.primary_group_id(), "Executing process");
+
+        let mut shell = cmd.spawn()?;
+
+        let process_exit_send = self.process_exit_send.clone();
+        tokio::spawn(async move {
+            let result = shell.wait().await;
+            let _ = process_exit_send.send(result).await;
+        });
+        debug!("Successfully spawned shell");
         Ok(())
     }
 }

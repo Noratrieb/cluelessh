@@ -13,6 +13,7 @@ eyre.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 rustix = { version = "0.38.34", features = ["pty", "termios", "procfs", "process", "stdio"] }
 users = "0.11.0"
+futures = "0.3.30"
 
 [lints]
 workspace = true

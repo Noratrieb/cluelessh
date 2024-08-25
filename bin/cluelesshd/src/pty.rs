@@ -1,9 +1,6 @@
 //! PTY-related operations for setting up the session.
 
-use std::{
-    io::{Read, Write},
-    os::fd::{AsRawFd, BorrowedFd, OwnedFd},
-};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 use eyre::{Context, Result};
 use rustix::{
@@ -11,17 +8,13 @@ use rustix::{
     pty::OpenptFlags,
     termios::Winsize,
 };
-use tokio::{process::Command, sync::mpsc, task::JoinHandle};
+use tokio::process::Command;
 
 pub struct Pty {
     term: String,
 
-    #[expect(dead_code)]
-    writer_handle: JoinHandle<()>,
-    #[expect(dead_code)]
-    reader_handle: JoinHandle<()>,
-    pub ctrl_write_send: mpsc::Sender<Vec<u8>>,
-    pub ctrl_read_recv: mpsc::Receiver<Vec<u8>>,
+    controller: OwnedFd,
+
     user_pty: OwnedFd,
     user_pty_name: String,
 }
@@ -53,56 +46,31 @@ impl Pty {
         let _ = modes;
         rustix::termios::tcsetattr(&user_pty, rustix::termios::OptionalActions::Flush, &termios)?;
 
-        // Set up communication threads:
-        let mut controller_read = std::fs::File::from(controller);
-        let mut controller_write = controller_read.try_clone()?;
-
-        let (ctrl_write_send, mut ctrl_write_recv) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
-        let (ctrl_read_send, ctrl_read_recv) = tokio::sync::mpsc::channel::<Vec<u8>>(10);
-
-        let writer_handle = tokio::task::spawn_blocking(move || {
-            while let Some(write) = ctrl_write_recv.blocking_recv() {
-                let _ = controller_write.write_all(&write);
-            }
-        });
-
-        let reader_handle = tokio::task::spawn_blocking(move || {
-            let mut buf = [0; 1024];
-            loop {
-                let Ok(read) = controller_read.read(&mut buf) else {
-                    return;
-                };
-                let Ok(_) = ctrl_read_send.blocking_send(buf[..read].to_vec()) else {
-                    return;
-                };
-            }
-        });
-
         Ok(Self {
             term,
-            writer_handle,
-            reader_handle,
-            ctrl_write_send,
-            ctrl_read_recv,
+            controller,
             user_pty,
             user_pty_name,
         })
     }
 
+    pub fn controller(&self) -> BorrowedFd<'_> {
+        self.controller.as_fd()
+    }
+
     pub fn start_session_for_command(&self, cmd: &mut Command) -> Result<()> {
-        let user_pty = self.user_pty.as_raw_fd();
+        let user_pty = self.user_pty.try_clone()?;
         unsafe {
             cmd.pre_exec(move || {
-                let user_pty = BorrowedFd::borrow_raw(user_pty);
-                rustix::pty::grantpt(user_pty)?;
+                rustix::pty::grantpt(&user_pty)?;
                 let pid = rustix::process::setsid()?;
-                rustix::process::ioctl_tiocsctty(user_pty)?; // Set as the current controlling tty
-                rustix::termios::tcsetpgrp(user_pty, pid)?; // Set current process as tty controller
+                rustix::process::ioctl_tiocsctty(&user_pty)?; // Set as the current controlling tty
+                rustix::termios::tcsetpgrp(&user_pty, pid)?; // Set current process as tty controller
 
                 // Setup stdio with PTY.
-                rustix::stdio::dup2_stdin(user_pty)?;
-                rustix::stdio::dup2_stdout(user_pty)?;
-                rustix::stdio::dup2_stderr(user_pty)?;
+                rustix::stdio::dup2_stdin(&user_pty)?;
+                rustix::stdio::dup2_stdout(&user_pty)?;
+                rustix::stdio::dup2_stderr(&user_pty)?;
 
                 Ok(())
             });

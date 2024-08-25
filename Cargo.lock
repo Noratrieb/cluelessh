@@ -434,6 +434,7 @@ dependencies = [
  "cluelessh-tokio",
  "cluelessh-transport",
  "eyre",
+ "futures",
  "rustix",
  "tokio",
  "tracing",
