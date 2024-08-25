@@ -44,8 +44,9 @@ impl ServerConnection {
                         self.transport.send_plaintext_packet(to_send);
                     }
                     if auth.is_authenticated() {
-                        self.state =
-                            ServerConnectionState::Open(cluelessh_connection::ChannelsState::new(true));
+                        self.state = ServerConnectionState::Open(
+                            cluelessh_connection::ChannelsState::new(true),
+                        );
                     }
                 }
                 ServerConnectionState::Open(con) => {
@@ -94,6 +95,20 @@ impl ServerConnection {
             }
         }
     }
+
+    pub fn channels(&mut self) -> Option<&mut cluelessh_connection::ChannelsState> {
+        match &mut self.state {
+            ServerConnectionState::Open(channels) => Some(channels),
+            _ => None,
+        }
+    }
+
+    pub fn auth(&mut self) -> Option<&mut auth::BadAuth> {
+        match &mut self.state {
+            ServerConnectionState::Auth(auth) => Some(auth),
+            _ => None,
+        }
+    }
 }
 
 pub struct ClientConnection {
@@ -108,7 +123,10 @@ enum ClientConnectionState {
 }
 
 impl ClientConnection {
-    pub fn new(transport: cluelessh_transport::client::ClientConnection, auth: auth::ClientAuth) -> Self {
+    pub fn new(
+        transport: cluelessh_transport::client::ClientConnection,
+        auth: auth::ClientAuth,
+    ) -> Self {
         Self {
             transport,
             state: ClientConnectionState::Setup(Some(auth)),
@@ -139,8 +157,9 @@ impl ClientConnection {
                         self.transport.send_plaintext_packet(to_send);
                     }
                     if auth.is_authenticated() {
-                        self.state =
-                            ClientConnectionState::Open(cluelessh_connection::ChannelsState::new(false));
+                        self.state = ClientConnectionState::Open(
+                            cluelessh_connection::ChannelsState::new(false),
+                        );
                     }
                 }
                 ClientConnectionState::Open(con) => {
@@ -225,6 +244,18 @@ pub mod auth {
         has_failed: bool,
         packets_to_send: VecDeque<Packet>,
         is_authenticated: bool,
+    }
+
+    pub enum ServerRequest {
+        VerifyPassword {
+            user: String,
+            password: String,
+        },
+        VerifyPubkey {
+            session_identifier: [u8; 32],
+            user: String,
+            pubkey: Vec<u8>,
+        },
     }
 
     impl BadAuth {
@@ -318,6 +349,10 @@ pub mod auth {
 
         pub fn is_authenticated(&self) -> bool {
             self.is_authenticated
+        }
+
+        pub fn server_requests(&mut self) -> impl Iterator<Item = ServerRequest> + '_ {
+            [].into_iter()
         }
 
         fn queue_packet(&mut self, packet: Packet) {

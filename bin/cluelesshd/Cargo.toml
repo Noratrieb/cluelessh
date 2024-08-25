@@ -1,0 +1,9 @@
+[package]
+name = "cluelesshd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cluelessh-protocol = { path = "../../lib/cluelessh-protocol" }
+cluelessh-tokio = { path = "../../lib/cluelessh-tokio" }
+cluelessh-transport = { path = "../../lib/cluelessh-transport" }

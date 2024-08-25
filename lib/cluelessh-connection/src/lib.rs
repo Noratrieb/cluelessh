@@ -32,7 +32,7 @@ enum ChannelState {
         our_window_size: u32,
         /// For validation only.
         our_max_packet_size: u32,
-        update_message: ChannelOpen,
+        update_message: ChannelKind,
     },
     Open(Channel),
 }
@@ -71,7 +71,7 @@ pub struct ChannelUpdate {
 pub enum ChannelUpdateKind {
     Success,
     Failure,
-    Open(ChannelOpen),
+    Open(ChannelKind),
     OpenFailed { code: u32, message: String },
     Request(ChannelRequest),
     Data { data: Vec<u8> },
@@ -80,7 +80,7 @@ pub enum ChannelUpdateKind {
     Closed,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChannelOpen {
+pub enum ChannelKind {
     Session,
 }
 #[derive(Debug)]
@@ -173,7 +173,7 @@ impl ChannelsState {
                 debug!(%channel_type, %sender_channel, "Receving channel open");
 
                 let update_message = match channel_type {
-                    "session" => ChannelOpen::Session,
+                    "session" => ChannelKind::Session,
                     _ => {
                         self.packets_to_send
                             .push_back(Packet::new_msg_channel_open_failure(
@@ -512,7 +512,7 @@ impl ChannelsState {
     }
 
     /// Create a new channel
-    pub fn create_channel(&mut self, kind: ChannelOpen) -> ChannelNumber {
+    pub fn create_channel(&mut self, kind: ChannelKind) -> ChannelNumber {
         let our_number = self.next_channel_id;
         self.next_channel_id = ChannelNumber(
             self.next_channel_id
@@ -521,7 +521,7 @@ impl ChannelsState {
                 .expect("created too many channels"),
         );
 
-        assert_eq!(kind, ChannelOpen::Session, "TODO");
+        assert_eq!(kind, ChannelKind::Session, "TODO");
 
         let our_window_size = 2097152; // same as OpenSSH
         let our_max_packet_size = 32768; // same as OpenSSH

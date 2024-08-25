@@ -8,7 +8,7 @@ use cluelessh_transport::{key::PublicKey, numbers, parse::Writer};
 use tokio::net::TcpStream;
 use tracing::{debug, error};
 
-use cluelessh_protocol::connection::{ChannelOpen, ChannelOperationKind, ChannelRequest};
+use cluelessh_protocol::connection::{ChannelKind, ChannelOperationKind, ChannelRequest};
 use tracing_subscriber::EnvFilter;
 
 #[derive(clap::Parser, Debug)]
@@ -121,7 +121,7 @@ async fn main() -> eyre::Result<()> {
     )
     .await?;
 
-    let session = tokio_conn.open_channel(ChannelOpen::Session);
+    let session = tokio_conn.open_channel(ChannelKind::Session);
 
     tokio::spawn(async {
         let result = main_channel(session).await;

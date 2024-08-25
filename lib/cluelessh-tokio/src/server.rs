@@ -1,20 +1,32 @@
-use cluelessh_connection::{ChannelKind, ChannelNumber, ChannelOperation, ChannelOperationKind};
-use std::{collections::HashMap, pin::Pin, sync::Arc};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use cluelessh_connection::{ChannelKind, ChannelNumber, ChannelOperation};
+use std::{
+    collections::{HashMap, VecDeque},
+    net::SocketAddr,
+    pin::Pin,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
 
 use cluelessh_protocol::{ChannelUpdateKind, SshStatus};
-use eyre::{bail, ContextCompat, OptionExt, Result, WrapErr};
-use futures::future::BoxFuture;
+use eyre::{eyre, ContextCompat, Result, WrapErr};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use crate::Channel;
 
-pub struct ClientConnection<S> {
+pub struct ServerListener {
+    listener: TcpListener,
+    // todo ratelimits etc
+}
+
+pub struct ServerConnection<S> {
     stream: Pin<Box<S>>,
+    peer_addr: SocketAddr,
     buf: [u8; 1024],
 
-    proto: cluelessh_protocol::ClientConnection,
+    proto: cluelessh_protocol::ServerConnection,
     operations_send: tokio::sync::mpsc::Sender<Operation>,
     operations_recv: tokio::sync::mpsc::Receiver<Operation>,
 
@@ -24,7 +36,8 @@ pub struct ClientConnection<S> {
 
     channels: HashMap<ChannelNumber, ChannelState>,
 
-    auth: ClientAuth,
+    /// New channels opened by the peer.
+    new_channels: VecDeque<Channel>,
 }
 
 enum ChannelState {
@@ -35,16 +48,16 @@ enum ChannelState {
     Ready(tokio::sync::mpsc::Sender<ChannelUpdateKind>),
 }
 
-pub struct ClientAuth {
-    pub username: String,
-    pub prompt_password: Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + Send + Sync>,
-    pub sign_pubkey:
-        Arc<dyn Fn(&[u8]) -> BoxFuture<'static, Result<SignatureResult>> + Send + Sync>,
-}
-
 enum Operation {
-    PasswordEntered(Result<String>),
-    Signature(Result<SignatureResult>),
+    VerifyPassword {
+        user: String,
+        password: String,
+    },
+    VerifyPubkey {
+        session_identifier: [u8; 32],
+        user: String,
+        pubkey: Vec<u8>,
+    },
 }
 
 pub struct SignatureResult {
@@ -57,62 +70,84 @@ pub struct PendingChannel {
     ready_recv: tokio::sync::oneshot::Receiver<Result<(), String>>,
     channel: Channel,
 }
+pub enum Error {
+    SshStatus(SshStatus),
+    ServerError(eyre::Report),
+}
+impl From<eyre::Report> for Error {
+    fn from(value: eyre::Report) -> Self {
+        Self::ServerError(value)
+    }
+}
 
-impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
-    pub async fn connect(stream: S, auth: ClientAuth) -> Result<Self> {
+impl ServerListener {
+    pub fn new(listener: TcpListener) -> Self {
+        Self { listener }
+    }
+
+    pub async fn accept(&mut self) -> Result<ServerConnection<TcpStream>> {
+        let (conn, peer_addr) = self.listener.accept().await?;
+
+        Ok(ServerConnection::new(conn, peer_addr))
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
+    pub fn new(stream: S, peer_addr: SocketAddr) -> Self {
         let (operations_send, operations_recv) = tokio::sync::mpsc::channel(15);
         let (channel_ops_send, channel_ops_recv) = tokio::sync::mpsc::channel(15);
 
-        let mut this = Self {
+        Self {
             stream: Box::pin(stream),
+            peer_addr,
             buf: [0; 1024],
             operations_send,
             operations_recv,
             channel_ops_send,
             channel_ops_recv,
             channels: HashMap::new(),
-            proto: cluelessh_protocol::ClientConnection::new(
-                cluelessh_transport::client::ClientConnection::new(
+            proto: cluelessh_protocol::ServerConnection::new(
+                cluelessh_transport::server::ServerConnection::new(
                     cluelessh_protocol::ThreadRngRand,
                 ),
-                cluelessh_protocol::auth::ClientAuth::new(auth.username.as_bytes().to_vec()),
             ),
-            auth,
-        };
-
-        while !this.proto.is_open() {
-            this.progress().await?;
+            new_channels: VecDeque::new(),
         }
+    }
 
-        Ok(this)
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer_addr
     }
 
     /// Executes one loop iteration of the main loop.
     // IMPORTANT: no operations on this struct should ever block the main loop, except this one.
-    pub async fn progress(&mut self) -> Result<()> {
+    pub async fn progress(&mut self) -> Result<(), Error> {
         if let Some(auth) = self.proto.auth() {
-            for req in auth.user_requests() {
+            for req in auth.server_requests() {
                 match req {
-                    cluelessh_protocol::auth::ClientUserRequest::Password => {
+                    cluelessh_protocol::auth::ServerRequest::VerifyPassword { user, password } => {
                         let send = self.operations_send.clone();
-                        let prompt_password = self.auth.prompt_password.clone();
                         tokio::spawn(async move {
-                            let password = prompt_password().await;
-                            let _ = send.send(Operation::PasswordEntered(password)).await;
+                            let _ = send
+                                .send(Operation::VerifyPassword { user, password })
+                                .await;
                         });
                     }
-                    cluelessh_protocol::auth::ClientUserRequest::PrivateKeySign {
+                    cluelessh_protocol::auth::ServerRequest::VerifyPubkey {
                         session_identifier,
+                        pubkey,
+                        user,
                     } => {
                         let send = self.operations_send.clone();
-                        let sign_pubkey = self.auth.sign_pubkey.clone();
                         tokio::spawn(async move {
-                            let signature_result = sign_pubkey(&session_identifier).await;
-                            let _ = send.send(Operation::Signature(signature_result)).await;
+                            let _ = send
+                                .send(Operation::VerifyPubkey {
+                                    session_identifier,
+                                    user,
+                                    pubkey,
+                                })
+                                .await;
                         });
-                    }
-                    cluelessh_protocol::auth::ClientUserRequest::Banner(_) => {
-                        warn!("ignoring banner as it's not implemented...");
                     }
                 }
             }
@@ -121,13 +156,12 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
         if let Some(channels) = self.proto.channels() {
             while let Some(update) = channels.next_channel_update() {
                 match &update.kind {
-                    ChannelUpdateKind::Open(_) => {
-                        let channel = self
-                            .channels
-                            .get_mut(&update.number)
-                            .wrap_err("unknown channel")?;
+                    ChannelUpdateKind::Open(channel_kind) => {
+                        let channel = self.channels.get_mut(&update.number);
+
                         match channel {
-                            ChannelState::Pending { updates_send, .. } => {
+                            // We opened.
+                            Some(ChannelState::Pending { updates_send, .. }) => {
                                 let updates_send = updates_send.clone();
                                 let old = self
                                     .channels
@@ -139,8 +173,28 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
                                     _ => unreachable!(),
                                 }
                             }
-                            ChannelState::Ready(_) => {
-                                bail!("attemping to open channel twice: {}", update.number);
+                            Some(ChannelState::Ready(_)) => {
+                                return Err(Error::ServerError(eyre!(
+                                    "attemping to open channel twice: {}",
+                                    update.number
+                                )))
+                            }
+                            // They opened.
+                            None => {
+                                let (updates_send, updates_recv) = tokio::sync::mpsc::channel(10);
+
+                                let number = update.number;
+
+                                self.channels
+                                    .insert(number, ChannelState::Ready(updates_send));
+
+                                let channel = Channel {
+                                    number,
+                                    updates_recv,
+                                    ops_send: self.channel_ops_send.clone(),
+                                    kind: channel_kind.clone(),
+                                };
+                                self.new_channels.push_back(channel);
                             }
                         }
                     }
@@ -160,7 +214,10 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
                                 }
                             }
                             ChannelState::Ready(_) => {
-                                bail!("attemping to open channel twice: {}", update.number);
+                                return Err(Error::ServerError(eyre!(
+                                    "attemping to open channel twice: {}",
+                                    update.number
+                                )))
                             }
                         }
                     }
@@ -170,7 +227,9 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
                             .get_mut(&update.number)
                             .wrap_err("unknown channel")?;
                         match channel {
-                            ChannelState::Pending { .. } => bail!("channel not ready yet"),
+                            ChannelState::Pending { .. } => {
+                                return Err(Error::ServerError(eyre!("channel not ready yet")))
+                            }
                             ChannelState::Ready(updates_send) => {
                                 let _ = updates_send.send(update.kind).await;
                             }
@@ -180,7 +239,7 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
             }
         }
 
-        // Make sure that we send all queues messages before going into the select, waiting for things to happen.
+        // Make sure that we send all queued messages before going into the select, waiting for things to happen.
         self.send_off_data().await?;
 
         tokio::select! {
@@ -191,14 +250,7 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
                     return Ok(());
                 }
                 if let Err(err) = self.proto.recv_bytes(&self.buf[..read]) {
-                    match err {
-                        SshStatus::PeerError(err) => {
-                            bail!("disconnecting client after invalid operation: {err}");
-                        }
-                        SshStatus::Disconnect => {
-                            bail!("Received disconnect from server");
-                        }
-                    }
+                    return Err(Error::SshStatus(err));
                 }
             }
             channel_op = self.channel_ops_recv.recv() => {
@@ -209,21 +261,8 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
             }
             op = self.operations_recv.recv() => {
                 match op {
-                    Some(Operation::PasswordEntered(password)) => {
-                        if let Some(auth) = self.proto.auth() {
-                            auth.send_password(&password?);
-                        } else {
-                            debug!("Ignoring entered password as the state has moved on");
-                        }
-                    }
-                    Some(Operation::Signature(result)) => {
-                        let result = result?;
-                        if let Some(auth) = self.proto.auth() {
-                            auth.send_signature(result.key_alg_name, &result.public_key, &result.signature);
-                        } else {
-                            debug!("Ignoring signature as the state has moved on");
-                        }
-                    }
+                    Some(Operation::VerifyPubkey { .. }) => todo!(),
+                    Some(Operation::VerifyPassword { .. }) => todo!(),
                     None => {}
                 }
                 self.send_off_data().await?;
@@ -271,6 +310,10 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
             },
         }
     }
+
+    pub fn next_new_channel(&mut self) -> Option<Channel> {
+        self.new_channels.pop_front()
+    }
 }
 
 impl PendingChannel {
@@ -280,14 +323,5 @@ impl PendingChannel {
             Ok(Err(err)) => Err(Some(err)),
             Err(_) => Err(None),
         }
-    }
-}
-
-impl Channel {
-    pub async fn send_operation(&mut self, op: ChannelOperationKind) -> Result<()> {
-        self.ops_send
-            .send(self.number.construct_op(op))
-            .await
-            .map_err(Into::into)
     }
 }

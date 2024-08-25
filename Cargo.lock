@@ -347,6 +347,7 @@ name = "cluelessh-faked"
 version = "0.1.0"
 dependencies = [
  "cluelessh-protocol",
+ "cluelessh-tokio",
  "eyre",
  "hex-literal",
  "rand",
@@ -423,6 +424,15 @@ dependencies = [
  "subtle",
  "tracing",
  "x25519-dalek",
+]
+
+[[package]]
+name = "cluelesshd"
+version = "0.1.0"
+dependencies = [
+ "cluelessh-protocol",
+ "cluelessh-tokio",
+ "cluelessh-transport",
 ]
 
 [[package]]

@@ -1,26 +1,18 @@
-use std::{collections::HashMap, net::SocketAddr};
+use std::{net::SocketAddr, sync::Arc};
 
+use cluelessh_tokio::Channel;
 use eyre::{Context, Result};
-use rand::RngCore;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::Mutex,
 };
-use tracing::{debug, error, info, info_span, Instrument};
+use tracing::{debug, error, info, info_span, warn, Instrument};
 
 use cluelessh_protocol::{
-    connection::{ChannelOpen, ChannelOperationKind, ChannelRequest},
-    transport::{self},
-    ChannelUpdateKind, ServerConnection, SshStatus,
+    connection::{ChannelKind, ChannelOperationKind, ChannelRequest},
+    ChannelUpdateKind, SshStatus,
 };
 use tracing_subscriber::EnvFilter;
-
-struct ThreadRngRand;
-impl cluelessh_protocol::transport::SshRng for ThreadRngRand {
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        rand::thread_rng().fill_bytes(dest);
-    }
-}
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -45,14 +37,16 @@ async fn main() -> eyre::Result<()> {
 
     let listener = TcpListener::bind(addr).await.wrap_err("binding listener")?;
 
+    let mut listener = cluelessh_tokio::server::ServerListener::new(listener);
+
     loop {
         let next = listener.accept().await?;
-        let span = info_span!("connection", addr = %next.1);
+        let span = info_span!("connection", addr = %next.peer_addr());
         tokio::spawn(
-            async {
-                let mut total_sent_data = Vec::new();
+            async move {
+                let total_sent_data = Arc::new(Mutex::new(Vec::new()));
 
-                if let Err(err) = handle_connection(next, &mut total_sent_data).await {
+                if let Err(err) = handle_connection(next, total_sent_data.clone()).await {
                     if let Some(err) = err.downcast_ref::<std::io::Error>() {
                         if err.kind() == std::io::ErrorKind::ConnectionReset {
                             return;
@@ -63,6 +57,7 @@ async fn main() -> eyre::Result<()> {
                 }
 
                 // Limit stdin to 500 characters.
+                let total_sent_data = total_sent_data.lock().await;
                 let stdin = String::from_utf8_lossy(&total_sent_data);
                 let stdin = if let Some((idx, _)) = stdin.char_indices().nth(500) {
                     &stdin[..idx]
@@ -78,46 +73,18 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn handle_connection(
-    next: (TcpStream, SocketAddr),
-    total_sent_data: &mut Vec<u8>,
+    mut conn: cluelessh_tokio::server::ServerConnection<TcpStream>,
+    total_sent_data: Arc<Mutex<Vec<u8>>>,
 ) -> Result<()> {
-    let (mut conn, addr) = next;
-
-    info!(%addr, "Received a new connection");
-
-    /*let rng = vec![
-        0x14, 0xa2, 0x04, 0xa5, 0x4b, 0x2f, 0x5f, 0xa7, 0xff, 0x53, 0x13, 0x67, 0x57, 0x67, 0xbc,
-        0x55, 0x3f, 0xc0, 0x6c, 0x0d, 0x07, 0x8f, 0xe2, 0x75, 0x95, 0x18, 0x4b, 0xd2, 0xcb, 0xd0,
-        0x64, 0x06, 0x14, 0xa2, 0x04, 0xa5, 0x4b, 0x2f, 0x5f, 0xa7, 0xff, 0x53, 0x13, 0x67, 0x57,
-        0x67, 0xbc, 0x55, 0x3f, 0xc0, 0x6c, 0x0d, 0x07, 0x8f, 0xe2, 0x75, 0x95, 0x18, 0x4b, 0xd2,
-        0xcb, 0xd0, 0x64, 0x06, 0x67, 0xbc, 0x55, 0x3f, 0xc0, 0x6c, 0x0d, 0x07, 0x8f, 0xe2, 0x75,
-        0x95, 0x18, 0x4b, 0xd2, 0xcb, 0xd0, 0x64, 0x06,
-    ];
-    struct HardcodedRng(Vec<u8>);
-    impl cluelessh_protocol::transport::SshRng for HardcodedRng {
-        fn fill_bytes(&mut self, dest: &mut [u8]) {
-            dest.copy_from_slice(&self.0[..dest.len()]);
-            self.0.splice(0..dest.len(), []);
-        }
-    }*/
-
-    let mut state = ServerConnection::new(transport::server::ServerConnection::new(ThreadRngRand));
-
-    let mut session_channels = HashMap::new();
+    info!(addr = %conn.peer_addr(), "Received a new connection");
 
     loop {
-        let mut buf = [0; 1024];
-        let read = conn
-            .read(&mut buf)
-            .await
-            .wrap_err("reading from connection")?;
-        if read == 0 {
-            info!("Did not read any bytes from TCP stream, EOF");
-            return Ok(());
-        }
-
-        if let Err(err) = state.recv_bytes(&buf[..read]) {
-            match err {
+        match conn.progress().await {
+            Ok(()) => {}
+            Err(cluelessh_tokio::server::Error::ServerError(err)) => {
+                return Err(err);
+            }
+            Err(cluelessh_tokio::server::Error::SshStatus(status)) => match status {
                 SshStatus::PeerError(err) => {
                     info!(?err, "disconnecting client after invalid operation");
                     return Ok(());
@@ -126,28 +93,40 @@ async fn handle_connection(
                     info!("Received disconnect from client");
                     return Ok(());
                 }
-            }
+            },
         }
 
-        while let Some(update) = state.next_channel_update() {
-            //eprintln!("{:?}", update);
-            match update.kind {
-                ChannelUpdateKind::Open(kind) => match kind {
-                    ChannelOpen::Session => {
-                        session_channels.insert(update.number, ());
-                    }
-                },
+        while let Some(channel) = conn.next_new_channel() {
+            if *channel.kind() == ChannelKind::Session {
+                let total_sent_data = total_sent_data.clone();
+                tokio::spawn(async {
+                    let _ = handle_session_channel(channel, total_sent_data).await;
+                });
+            } else {
+                warn!("Trying to open non-session channel");
+            }
+        }
+    }
+}
+
+async fn handle_session_channel(
+    mut channel: Channel,
+    total_sent_data: Arc<Mutex<Vec<u8>>>,
+) -> Result<()> {
+    loop {
+        match channel.next_update().await {
+            Ok(update) => match update {
                 ChannelUpdateKind::Request(req) => {
-                    let success = update.number.construct_op(ChannelOperationKind::Success);
+                    let success = ChannelOperationKind::Success;
                     match req {
                         ChannelRequest::PtyReq { want_reply, .. } => {
                             if want_reply {
-                                state.do_operation(success);
+                                channel.send(success).await?;
                             }
                         }
                         ChannelRequest::Shell { want_reply } => {
                             if want_reply {
-                                state.do_operation(success);
+                                channel.send(success).await?;
                             }
                         }
                         ChannelRequest::Exec {
@@ -155,26 +134,20 @@ async fn handle_connection(
                             command,
                         } => {
                             if want_reply {
-                                state.do_operation(success);
+                                channel.send(success).await?;
                             }
 
                             let result = execute_command(&command);
-                            state.do_operation(
-                                update
-                                    .number
-                                    .construct_op(ChannelOperationKind::Data(result.stdout)),
-                            );
-                            state.do_operation(update.number.construct_op(
-                                ChannelOperationKind::Request(ChannelRequest::ExitStatus {
+                            channel
+                                .send(ChannelOperationKind::Data(result.stdout))
+                                .await?;
+                            channel
+                                .send(ChannelOperationKind::Request(ChannelRequest::ExitStatus {
                                     status: result.status,
-                                }),
-                            ));
-                            state.do_operation(
-                                update.number.construct_op(ChannelOperationKind::Eof),
-                            );
-                            state.do_operation(
-                                update.number.construct_op(ChannelOperationKind::Close),
-                            );
+                                }))
+                                .await?;
+                            channel.send(ChannelOperationKind::Eof).await?;
+                            channel.send(ChannelOperationKind::Close).await?;
                         }
                         ChannelRequest::ExitStatus { .. } => {}
                         ChannelRequest::Env { .. } => {}
@@ -185,44 +158,37 @@ async fn handle_connection(
                     let is_eof = data.contains(&0x04 /*EOF, Ctrl-D*/);
 
                     // echo :3
-                    state.do_operation(
-                        update
-                            .number
-                            .construct_op(ChannelOperationKind::Data(data.clone())),
-                    );
+                    channel
+                        .send(ChannelOperationKind::Data(data.clone()))
+                        .await?;
 
+                    let mut total_sent_data = total_sent_data.lock().await;
                     // arbitrary limit
                     if total_sent_data.len() < 50_000 {
                         total_sent_data.extend_from_slice(&data);
                     } else {
-                        info!(channel = %update.number, "Reached stdin limit");
-                        state.do_operation(update.number.construct_op(ChannelOperationKind::Data(
-                            b"Thanks Hayley!\n".to_vec(),
-                        )));
-                        state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
+                        info!("Reached stdin limit");
+                        channel
+                            .send(ChannelOperationKind::Data(b"Thanks Hayley!\n".to_vec()))
+                            .await?;
+                        channel.send(ChannelOperationKind::Close).await?;
                     }
 
                     if is_eof {
-                        debug!(channel = %update.number, "Received Ctrl-D, closing channel");
+                        debug!("Received Ctrl-D, closing channel");
 
-                        state.do_operation(update.number.construct_op(ChannelOperationKind::Eof));
-                        state.do_operation(update.number.construct_op(ChannelOperationKind::Close));
+                        channel.send(ChannelOperationKind::Eof).await?;
+                        channel.send(ChannelOperationKind::Close).await?;
                     }
                 }
-                ChannelUpdateKind::ExtendedData { .. }
+                ChannelUpdateKind::Open(_)
+                | ChannelUpdateKind::Closed
+                | ChannelUpdateKind::ExtendedData { .. }
                 | ChannelUpdateKind::Eof
                 | ChannelUpdateKind::Success
                 | ChannelUpdateKind::Failure => { /* ignore */ }
-                ChannelUpdateKind::Closed => {
-                    session_channels.remove(&update.number);
-                }
-            }
-        }
-
-        while let Some(msg) = state.next_msg_to_send() {
-            conn.write_all(&msg.to_bytes())
-                .await
-                .wrap_err("writing response")?;
+            },
+            Err(err) => return Err(err),
         }
     }
 }
