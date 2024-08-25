@@ -31,7 +31,7 @@ pub struct ClientAuth {
     pub username: String,
     pub prompt_password: Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + Send + Sync>,
     pub sign_pubkey:
-        Arc<dyn Fn(&[u8]) -> BoxFuture<'static, Result<SignatureResult>> + Send + Sync>,
+        Arc<dyn Fn([u8; 32]) -> BoxFuture<'static, Result<SignatureResult>> + Send + Sync>,
 }
 
 enum Operation {
@@ -94,7 +94,7 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
                         let send = self.operations_send.clone();
                         let sign_pubkey = self.auth.sign_pubkey.clone();
                         tokio::spawn(async move {
-                            let signature_result = sign_pubkey(&session_identifier).await;
+                            let signature_result = sign_pubkey(session_identifier).await;
                             let _ = send.send(Operation::Signature(signature_result)).await;
                         });
                     }

@@ -4,7 +4,7 @@ use clap::Parser;
 
 use cluelessh_tokio::client::SignatureResult;
 use cluelessh_tokio::PendingChannel;
-use cluelessh_transport::{key::PublicKey, numbers, parse::Writer};
+use cluelessh_transport::key::PublicKey;
 use eyre::{bail, Context, ContextCompat, OptionExt, Result};
 use tokio::net::TcpStream;
 use tracing::{debug, error};
@@ -70,7 +70,6 @@ async fn main() -> eyre::Result<()> {
                 })
             }),
             sign_pubkey: Arc::new(move |session_identifier| {
-                let session_identifier = session_identifier.to_vec();
                 let mut attempted_public_keys = HashSet::new();
                 let username = username.clone();
                 Box::pin(async move {
@@ -94,19 +93,13 @@ async fn main() -> eyre::Result<()> {
                     }
                     let pubkey = PublicKey::from_wire_encoding(&identity.key_blob)?;
 
-                    let mut sign_data = Writer::new();
-                    sign_data.string(session_identifier);
-                    sign_data.u8(numbers::SSH_MSG_USERAUTH_REQUEST);
-                    sign_data.string(&username);
-                    sign_data.string("ssh-connection");
-                    sign_data.string("publickey");
-                    sign_data.bool(true);
-                    sign_data.string(pubkey.algorithm_name());
-                    sign_data.string(&identity.key_blob);
-
-                    let data = sign_data.finish();
+                    let sign_data = cluelessh_keys::signature::signature_data(
+                        session_identifier,
+                        &username,
+                        &pubkey,
+                    );
                     let signature = agent
-                        .sign(&identity.key_blob, &data, 0)
+                        .sign(&identity.key_blob, &sign_data, 0)
                         .await
                         .wrap_err("signing for authentication")?;
 

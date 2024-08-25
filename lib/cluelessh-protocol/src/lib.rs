@@ -297,7 +297,7 @@ pub mod auth {
     pub struct CheckPubkey {
         pub user: String,
         pub session_identifier: [u8; 32],
-        pub pubkey_alg_name: Vec<u8>,
+        pub pubkey_alg_name: String,
         pub pubkey: Vec<u8>,
     }
 
@@ -305,7 +305,7 @@ pub mod auth {
     pub struct VerifySignature {
         pub user: String,
         pub session_identifier: [u8; 32],
-        pub pubkey_alg_name: Vec<u8>,
+        pub pubkey_alg_name: String,
         pub pubkey: Vec<u8>,
         pub signature: Vec<u8>,
     }
@@ -391,7 +391,7 @@ pub mod auth {
 
                     let has_signature = p.bool()?;
 
-                    let pubkey_alg_name = p.string()?;
+                    let pubkey_alg_name = p.utf8_string()?;
                     let public_key_blob = p.string()?;
 
                     // Whether the client is just checking whether the public key is allowed.
@@ -400,7 +400,7 @@ pub mod auth {
                             .push_back(ServerRequest::CheckPubkey(CheckPubkey {
                                 user: username.to_owned(),
                                 session_identifier: self.session_ident,
-                                pubkey_alg_name: pubkey_alg_name.to_vec(),
+                                pubkey_alg_name: pubkey_alg_name.to_owned(),
                                 pubkey: public_key_blob.to_vec(),
                             }));
                     } else {
@@ -409,7 +409,7 @@ pub mod auth {
                             .push_back(ServerRequest::VerifySignature(VerifySignature {
                                 user: username.to_owned(),
                                 session_identifier: self.session_ident,
-                                pubkey_alg_name: pubkey_alg_name.to_vec(),
+                                pubkey_alg_name: pubkey_alg_name.to_owned(),
                                 pubkey: public_key_blob.to_vec(),
                                 signature: signature.to_vec(),
                             }));
@@ -432,9 +432,9 @@ pub mod auth {
             Ok(())
         }
 
-        pub fn pubkey_check_result(&mut self, is_ok: bool, alg: &[u8], key_blob: &[u8]) {
+        pub fn pubkey_check_result(&mut self, is_ok: bool, alg: &str, key_blob: &[u8]) {
             if is_ok {
-                self.queue_packet(Packet::new_msg_userauth_pk_ok(alg, key_blob));
+                self.queue_packet(Packet::new_msg_userauth_pk_ok(alg.as_bytes(), key_blob));
             } else {
                 self.send_failure();
                 // It's ok, don't treat this as a fatal failure.

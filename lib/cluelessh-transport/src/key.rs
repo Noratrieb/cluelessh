@@ -5,10 +5,11 @@
 use std::fmt::Display;
 
 use base64::Engine;
+use tracing::debug;
 
 use crate::parse::{self, ParseError, Parser, Writer};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PublicKey {
     Ed25519 { public_key: [u8; 32] },
 }
@@ -44,10 +45,38 @@ impl PublicKey {
         }
         p.finish()
     }
-    
+
     pub fn algorithm_name(&self) -> &'static str {
         match self {
             Self::Ed25519 { .. } => "ssh-ed25519",
+        }
+    }
+
+    pub fn verify_signature(&self, data: &[u8], signature: &[u8]) -> bool {
+        match self {
+            PublicKey::Ed25519 { public_key } => {
+                let mut s = Parser::new(signature);
+                let Ok(alg) = s.utf8_string() else {
+                    return false;
+                };
+                if alg != "ssh-ed25519" {
+                    return false;
+                }
+                let Ok(signature) = s.string() else {
+                    return false;
+                };
+
+                let Ok(signature) = ed25519_dalek::Signature::from_slice(signature) else {
+                    debug!("Invalid signature length");
+                    return false;
+                };
+                let Ok(verifying_key) = ed25519_dalek::VerifyingKey::from_bytes(public_key) else {
+                    debug!("Invalid public key");
+                    return false;
+                };
+
+                verifying_key.verify_strict(data, &signature).is_ok()
+            }
         }
     }
 }

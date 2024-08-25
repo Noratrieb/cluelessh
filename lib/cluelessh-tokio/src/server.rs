@@ -50,7 +50,7 @@ pub struct ServerConnection<S> {
 
 enum Operation {
     VerifyPassword(String, Result<bool>),
-    CheckPubkey(Result<bool>, Vec<u8>, Vec<u8>),
+    CheckPubkey(Result<bool>, String, Vec<u8>),
     VerifySignature(String, Result<bool>),
 }
 

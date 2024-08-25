@@ -1,9 +1,12 @@
+mod auth;
 mod pty;
 
 use std::{io, net::SocketAddr, process::ExitStatus, sync::Arc};
 
+use auth::AuthError;
 use cluelessh_tokio::{server::ServerAuthVerify, Channel};
-use eyre::{bail, Context, OptionExt, Result};
+use cluelessh_transport::key::PublicKey;
+use eyre::{bail, eyre, Context, OptionExt, Result};
 use pty::Pty;
 use rustix::termios::Winsize;
 use tokio::{
@@ -42,16 +45,65 @@ async fn main() -> eyre::Result<()> {
         verify_password: None,
         verify_signature: Some(Arc::new(|auth| {
             Box::pin(async move {
-                debug!(user = %auth.user, "Attempting publickey login");
-                warn!("Letting in unauthenticated user");
-                Ok(true)
+                let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
+                    return Ok(false);
+                };
+                if auth.pubkey_alg_name != public_key.algorithm_name() {
+                    return Ok(false);
+                }
+
+                let result: std::result::Result<auth::UserPublicKey, AuthError> =
+                    auth::UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
+
+                debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey signature");
+
+                match result {
+                    Ok(user_key) => {
+                        // Verify signature...
+
+                        let sign_data = cluelessh_keys::signature::signature_data(
+                            auth.session_identifier,
+                            &auth.user,
+                            &public_key,
+                        );
+
+                        if user_key.verify_signature(&sign_data, &auth.signature) {
+                            Ok(true)
+                        } else {
+                            Ok(false)
+                        }
+                    }
+                    Err(
+                        AuthError::UnknownUser
+                        | AuthError::UnauthorizedPublicKey
+                        | AuthError::NoAuthorizedKeys(_),
+                    ) => Ok(false),
+                    Err(AuthError::InvalidAuthorizedKeys(err)) => Err(eyre!(err)),
+                }
             })
         })),
         check_pubkey: Some(Arc::new(|auth| {
             Box::pin(async move {
-                debug!(user = %auth.user, "Attempting publickey check");
-                warn!("Letting in unauthenticated user");
-                Ok(true)
+                let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
+                    return Ok(false);
+                };
+                if auth.pubkey_alg_name != public_key.algorithm_name() {
+                    return Ok(false);
+                }
+                let result =
+                    auth::UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
+
+                debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey check");
+
+                match result {
+                    Ok(_) => Ok(true),
+                    Err(
+                        AuthError::UnknownUser
+                        | AuthError::UnauthorizedPublicKey
+                        | AuthError::NoAuthorizedKeys(_),
+                    ) => Ok(false),
+                    Err(AuthError::InvalidAuthorizedKeys(err)) => Err(eyre!(err)),
+                }
             })
         })),
         auth_banner: Some("welcome to my server!!!\r\ni hope you enjoy your stay.\r\n".to_owned()),
@@ -92,7 +144,7 @@ async fn handle_connection(
             step = conn.progress() => match step {
                 Ok(()) => {}
                 Err(cluelessh_tokio::server::Error::ServerError(err)) => {
-                    return Err(err);
+                    return Err(err.wrap_err("encountered server error during connection"));
                 }
                 Err(cluelessh_tokio::server::Error::SshStatus(status)) => match status {
                     SshStatus::PeerError(err) => {
@@ -109,7 +161,7 @@ async fn handle_connection(
                 debug!(?result, "error!");
                 match result {
                     Ok(_) => channel_tasks.clear(),
-                    Err(err) => return Err(err as eyre::Report),
+                    Err(err) => return Err((err as eyre::Report).wrap_err("channel task failed")),
                 }
             },
         }

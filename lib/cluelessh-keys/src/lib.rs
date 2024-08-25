@@ -1,14 +1,22 @@
+pub mod authorized_keys;
 mod crypto;
+pub mod signature;
 
-use crypto::{Cipher, Kdf};
 use cluelessh_transport::{
     key::PublicKey,
     parse::{self, Parser, Writer},
 };
+use crypto::{Cipher, Kdf};
 
 // TODO: good typed error messages so the user knows what's going on
 
 pub use crypto::{KeyGenerationParams, KeyType};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublicKeyWithComment {
+    pub key: PublicKey,
+    pub comment: String,
+}
 
 pub struct EncryptedPrivateKeys {
     pub public_keys: Vec<PublicKey>,
