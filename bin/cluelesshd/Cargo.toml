@@ -7,6 +7,11 @@ edition = "2021"
 cluelessh-protocol = { path = "../../lib/cluelessh-protocol" }
 cluelessh-tokio = { path = "../../lib/cluelessh-tokio" }
 cluelessh-transport = { path = "../../lib/cluelessh-transport" }
+tokio = { version = "1.39.2", features = ["full"] }
+tracing.workspace = true
+eyre.workspace = true
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+rustix = { version = "0.38.34", features = ["pty", "termios", "procfs", "process", "stdio"] }
 
 [lints]
 workspace = true

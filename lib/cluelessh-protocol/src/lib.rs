@@ -24,7 +24,7 @@ pub struct ServerConnection {
 }
 
 enum ServerConnectionState {
-    Setup(HashSet<AuthOption>),
+    Setup(HashSet<AuthOption>, Option<String>),
     Auth(auth::ServerAuth),
     Open(cluelessh_connection::ChannelsState),
 }
@@ -33,20 +33,22 @@ impl ServerConnection {
     pub fn new(
         transport: cluelessh_transport::server::ServerConnection,
         auth_options: HashSet<AuthOption>,
+        auth_banner: Option<String>,
     ) -> Self {
         Self {
             transport,
-            state: ServerConnectionState::Setup(auth_options),
+            state: ServerConnectionState::Setup(auth_options, auth_banner),
         }
     }
 
     pub fn recv_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         self.transport.recv_bytes(bytes)?;
 
-        if let ServerConnectionState::Setup(options) = &mut self.state {
+        if let ServerConnectionState::Setup(options, auth_banner) = &mut self.state {
             if let Some(session_ident) = self.transport.is_open() {
                 self.state = ServerConnectionState::Auth(auth::ServerAuth::new(
                     mem::take(options),
+                    auth_banner.take(),
                     session_ident,
                 ));
             }
@@ -54,7 +56,7 @@ impl ServerConnection {
 
         while let Some(packet) = self.transport.next_plaintext_packet() {
             match &mut self.state {
-                ServerConnectionState::Setup(_) => unreachable!(),
+                ServerConnectionState::Setup(_, _) => unreachable!(),
                 ServerConnectionState::Auth(auth) => {
                     auth.recv_packet(packet)?;
                     for to_send in auth.packets_to_send() {
@@ -78,14 +80,14 @@ impl ServerConnection {
 
     pub fn next_channel_update(&mut self) -> Option<cluelessh_connection::ChannelUpdate> {
         match &mut self.state {
-            ServerConnectionState::Setup(_) | ServerConnectionState::Auth(_) => None,
+            ServerConnectionState::Setup(..) | ServerConnectionState::Auth(_) => None,
             ServerConnectionState::Open(con) => con.next_channel_update(),
         }
     }
 
     pub fn do_operation(&mut self, op: ChannelOperation) {
         match &mut self.state {
-            ServerConnectionState::Setup(_) | ServerConnectionState::Auth(_) => {
+            ServerConnectionState::Setup(..) | ServerConnectionState::Auth(_) => {
                 panic!("tried to get connection before it is ready")
             }
             ServerConnectionState::Open(con) => {
@@ -97,7 +99,7 @@ impl ServerConnection {
 
     pub fn progress(&mut self) {
         match &mut self.state {
-            ServerConnectionState::Setup(_) => {}
+            ServerConnectionState::Setup(..) => {}
             ServerConnectionState::Auth(auth) => {
                 for to_send in auth.packets_to_send() {
                     self.transport.send_plaintext_packet(to_send);
@@ -263,7 +265,7 @@ pub mod auth {
         packets_to_send: VecDeque<Packet>,
         is_authenticated: bool,
         options: HashSet<AuthOption>,
-
+        banner: Option<String>,
         server_requests: VecDeque<ServerRequest>,
         session_ident: [u8; 32],
     }
@@ -292,13 +294,18 @@ pub mod auth {
     }
 
     impl ServerAuth {
-        pub fn new(options: HashSet<AuthOption>, session_ident: [u8; 32]) -> Self {
+        pub fn new(
+            options: HashSet<AuthOption>,
+            banner: Option<String>,
+            session_ident: [u8; 32],
+        ) -> Self {
             Self {
                 has_failed: false,
                 packets_to_send: VecDeque::new(),
                 options,
                 is_authenticated: false,
                 session_ident,
+                banner,
                 server_requests: VecDeque::new(),
             }
         }
@@ -385,14 +392,9 @@ pub mod auth {
                 }
                 _ => {
                     // Initial:
-                    self.queue_packet(Packet::new_msg_userauth_banner(
-                                b"!! this system ONLY allows catgirls to enter !!\r\n\
-                                !! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n\
-                                !! THIS SYTEM WILL LOG AND STORE YOUR CLEARTEXT PASSWORD !!\r\n\
-                                !! DO NOT ENTER PASSWORDS YOU DON'T WANT STOLEN !!\r\n",
-                                b"",
-                            ));
-
+                    if let Some(banner) = &self.banner {
+                        self.queue_packet(Packet::new_msg_userauth_banner(banner.as_bytes(), b""));
+                    }
                     self.send_failure();
                     // Stay in the same state
                 }

@@ -136,7 +136,7 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn main_channel(channel: PendingChannel) -> Result<()> {
-    let Ok(mut channel) = channel.wait_ready().await else {
+    let Ok(channel) = channel.wait_ready().await else {
         bail!("failed to create channel");
     };
 

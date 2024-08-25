@@ -47,6 +47,14 @@ async fn main() -> eyre::Result<()> {
             })
         })),
         verify_pubkey: None,
+        auth_banner: Some(
+            "\
+            !! this system ONLY allows catgirls to enter !!\r\n\
+            !! all other attempts WILL be prosecuted to the full extent of the rawr !!\r\n\
+            !! THIS SYTEM WILL LOG AND STORE YOUR CLEARTEXT PASSWORD !!\r\n\
+            !! DO NOT ENTER PASSWORDS YOU DON'T WANT STOLEN !!\r\n"
+                .to_owned(),
+        ),
     };
 
     let mut listener = cluelessh_tokio::server::ServerListener::new(listener, auth_verify);

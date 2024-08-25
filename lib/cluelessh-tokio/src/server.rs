@@ -59,6 +59,7 @@ pub struct ServerAuthVerify {
         Option<Arc<dyn Fn(VerifyPassword) -> BoxFuture<'static, Result<()>> + Send + Sync>>,
     pub verify_pubkey:
         Option<Arc<dyn Fn(VerifyPubkey) -> BoxFuture<'static, Result<()>> + Send + Sync>>,
+    pub auth_banner: Option<String>,
 }
 fn _assert_send_sync() {
     fn send<T: Send + Sync>() {}
@@ -125,6 +126,7 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
                     cluelessh_protocol::ThreadRngRand,
                 ),
                 options,
+                auth_verify.auth_banner.clone(),
             ),
             new_channels: VecDeque::new(),
             auth_verify,

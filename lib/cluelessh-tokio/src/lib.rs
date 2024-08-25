@@ -13,7 +13,7 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub async fn send(&mut self, op: ChannelOperationKind) -> Result<()> {
+    pub async fn send(&self, op: ChannelOperationKind) -> Result<()> {
         self.ops_send
             .send(self.number.construct_op(op))
             .await
