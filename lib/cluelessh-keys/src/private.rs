@@ -33,6 +33,7 @@ impl Debug for PlaintextPrivateKey {
 }
 
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum PrivateKey {
     Ed25519 {
         public_key: ed25519_dalek::VerifyingKey,

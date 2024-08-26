@@ -110,7 +110,7 @@ impl AlgorithmName for EncryptionAlgorithm {
 pub struct EncodedSshSignature(pub Vec<u8>);
 
 pub struct HostKeySigningAlgorithm {
-    private_key: PrivateKey,
+    private_key: Box<PrivateKey>,
 }
 
 impl AlgorithmName for HostKeySigningAlgorithm {
@@ -121,7 +121,9 @@ impl AlgorithmName for HostKeySigningAlgorithm {
 
 impl HostKeySigningAlgorithm {
     pub fn new(private_key: PrivateKey) -> Self {
-        Self { private_key }
+        Self {
+            private_key: Box::new(private_key),
+        }
     }
     pub fn sign(&self, data: &[u8]) -> Signature {
         self.private_key.sign(data)

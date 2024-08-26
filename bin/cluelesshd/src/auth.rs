@@ -39,11 +39,11 @@ impl UserPublicKey {
 
         let file = tokio::fs::read_to_string(sshd_dir)
             .await
-            .map_err(|err| AuthError::NoAuthorizedKeys(err))?;
+            .map_err(AuthError::NoAuthorizedKeys)?;
 
         let authorized_keys = AuthorizedKeys::parse(&file)?;
 
-        if let Some(key) = authorized_keys.contains(&provided_key) {
+        if let Some(key) = authorized_keys.contains(provided_key) {
             Ok(Self(key.clone()))
         } else {
             Err(AuthError::UnauthorizedPublicKey)

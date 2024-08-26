@@ -192,7 +192,7 @@ async fn handle_connection(
                     }
                 },
             },
-            result = futures::future::try_join_all(&mut channel_tasks), if channel_tasks.len() > 0 => {
+            result = futures::future::try_join_all(&mut channel_tasks), if !channel_tasks.is_empty() => {
                 match result {
                     Ok(_) => channel_tasks.clear(),
                     Err(err) => return Err((err as eyre::Report).wrap_err("channel task failed")),
@@ -259,20 +259,17 @@ async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
                 }
             }
             exit = state.process_exit_recv.recv() => {
-                match exit {
-                    Some(exit) => {
-                        let exit = exit?;
-                        state.channel.send(ChannelOperationKind::Eof).await?;
-                        // TODO: also handle exit-signal
-                        state.channel
-                            .send(ChannelOperationKind::Request(ChannelRequest::ExitStatus {
-                                status: exit.code().unwrap_or(0) as u32,
-                            }))
-                        .await?;
-                        state.channel.send(ChannelOperationKind::Close).await?;
-                        return Ok(());
-                    }
-                    None => {}
+                if let Some(exit) = exit {
+                    let exit = exit?;
+                    state.channel.send(ChannelOperationKind::Eof).await?;
+                    // TODO: also handle exit-signal
+                    state.channel
+                        .send(ChannelOperationKind::Request(ChannelRequest::ExitStatus {
+                            status: exit.code().unwrap_or(0) as u32,
+                        }))
+                    .await?;
+                    state.channel.send(ChannelOperationKind::Close).await?;
+                    return Ok(());
                 }
             }
             read = read => {
@@ -346,12 +343,11 @@ impl SessionState {
                 };
             }
             ChannelUpdateKind::OpenFailed { .. } => todo!(),
-            ChannelUpdateKind::Data { data } => match &mut self.writer {
-                Some(pty) => {
-                    pty.write_all(&data).await?;
+            ChannelUpdateKind::Data { data } => {
+                if let Some(writer) = &mut self.writer {
+                    writer.write_all(&data).await?;
                 }
-                None => {}
-            },
+            }
             ChannelUpdateKind::Open(_)
             | ChannelUpdateKind::Closed
             | ChannelUpdateKind::ExtendedData { .. }

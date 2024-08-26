@@ -24,8 +24,7 @@ use crate::{Channel, ChannelState, PendingChannel};
 pub struct ServerListener {
     listener: TcpListener,
     auth_verify: ServerAuthVerify,
-    transport_config: cluelessh_transport::server::ServerConfig
-    // TODO ratelimits etc
+    transport_config: cluelessh_transport::server::ServerConfig, // TODO ratelimits etc
 }
 
 pub struct ServerConnection<S> {
@@ -80,7 +79,11 @@ impl From<eyre::Report> for Error {
 }
 
 impl ServerListener {
-    pub fn new(listener: TcpListener, auth_verify: ServerAuthVerify,  transport_config: cluelessh_transport::server::ServerConfig) -> Self {
+    pub fn new(
+        listener: TcpListener,
+        auth_verify: ServerAuthVerify,
+        transport_config: cluelessh_transport::server::ServerConfig,
+    ) -> Self {
         Self {
             listener,
             auth_verify,
@@ -101,7 +104,12 @@ impl ServerListener {
 }
 
 impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
-    pub fn new(stream: S, peer_addr: SocketAddr, auth_verify: ServerAuthVerify, transport_config: cluelessh_transport::server::ServerConfig) -> Self {
+    pub fn new(
+        stream: S,
+        peer_addr: SocketAddr,
+        auth_verify: ServerAuthVerify,
+        transport_config: cluelessh_transport::server::ServerConfig,
+    ) -> Self {
         let (operations_send, operations_recv) = tokio::sync::mpsc::channel(15);
         let (channel_ops_send, channel_ops_recv) = tokio::sync::mpsc::channel(15);
 

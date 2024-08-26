@@ -145,8 +145,9 @@ impl ServerConnection {
                     let kex_algorithm = sup_algs.key_exchange.find(kex.kex_algorithms.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
-                    let server_host_key_algorithm =
-                        sup_algs.hostkey_sign.find(kex.server_host_key_algorithms.0)?;
+                    let server_host_key_algorithm = sup_algs
+                        .hostkey_sign
+                        .find(kex.server_host_key_algorithms.0)?;
                     debug!(name = %server_host_key_algorithm.name(), "Using host key algorithm");
 
                     // TODO: Implement aes128-ctr

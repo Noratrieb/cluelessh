@@ -43,7 +43,7 @@ impl InteractiveShell {
                 127 => {
                     // Backspace, space, backspace.
                     // We literally erase it.
-                    if self.line_buf.len() > 0 {
+                    if !self.line_buf.is_empty() {
                         self.write(&[8, 32, 8]);
                         self.line_buf.truncate(self.line_buf.len() - 1);
                     }
