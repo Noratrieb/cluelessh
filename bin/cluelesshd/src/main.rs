@@ -4,8 +4,8 @@ mod pty;
 use std::{io, net::SocketAddr, process::ExitStatus, sync::Arc};
 
 use auth::AuthError;
+use cluelessh_keys::public::PublicKey;
 use cluelessh_tokio::{server::ServerAuthVerify, Channel};
-use cluelessh_transport::key::PublicKey;
 use eyre::{bail, eyre, Context, OptionExt, Result};
 use pty::Pty;
 use rustix::termios::Winsize;
@@ -109,7 +109,9 @@ async fn main() -> eyre::Result<()> {
         auth_banner: Some("welcome to my server!!!\r\ni hope you enjoy your stay.\r\n".to_owned()),
     };
 
-    let mut listener = cluelessh_tokio::server::ServerListener::new(listener, auth_verify);
+    let config = todo!();
+
+    let mut listener = cluelessh_tokio::server::ServerListener::new(listener, auth_verify, config);
 
     loop {
         let next = listener.accept().await?;

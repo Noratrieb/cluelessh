@@ -1,5 +1,6 @@
 use cluelessh_format::Writer;
-use cluelessh_transport::key::PublicKey;
+
+use crate::public::PublicKey;
 
 // TODO SessionId newtype
 pub fn signature_data(session_id: [u8; 32], username: &str, pubkey: &PublicKey) -> Vec<u8> {

@@ -3,7 +3,7 @@ use std::{io::Write, path::PathBuf};
 use clap::Parser;
 use cluelessh_agent_client::{IdentityAnswer, SocketAgentConnection};
 use cluelessh_format::Writer;
-use cluelessh_transport::key::PublicKey;
+use cluelessh_keys::public::PublicKey;
 use eyre::{bail, Context};
 use sha2::Digest;
 

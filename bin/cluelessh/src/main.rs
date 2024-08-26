@@ -2,9 +2,9 @@ use std::{collections::HashSet, sync::Arc};
 
 use clap::Parser;
 
+use cluelessh_keys::public::PublicKey;
 use cluelessh_tokio::client::SignatureResult;
 use cluelessh_tokio::PendingChannel;
-use cluelessh_transport::key::PublicKey;
 use eyre::{bail, Context, ContextCompat, OptionExt, Result};
 use tokio::net::TcpStream;
 use tracing::{debug, error};

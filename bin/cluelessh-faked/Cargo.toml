@@ -9,7 +9,7 @@ hex-literal = "0.4.1"
 rand = "0.8.5"
 cluelessh-protocol = { path = "../../lib/cluelessh-protocol" }
 cluelessh-tokio = { path = "../../lib/cluelessh-tokio" }
-
+cluelessh-keys = { path = "../../lib/cluelessh-keys" }
 tokio = { version = "1.39.2", features = ["full"] }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 

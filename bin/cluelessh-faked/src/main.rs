@@ -60,7 +60,18 @@ async fn main() -> eyre::Result<()> {
         ),
     };
 
-    let mut listener = cluelessh_tokio::server::ServerListener::new(listener, auth_verify);
+    let transport_config = cluelessh_protocol::transport::server::ServerConfig {
+        host_keys: vec![
+            cluelessh_keys::EncryptedPrivateKeys::parse(ED25519_PRIVKEY.as_bytes())
+                .unwrap()
+                .decrypt(None)
+                .unwrap()
+                .remove(0),
+        ],
+    };
+
+    let mut listener =
+        cluelessh_tokio::server::ServerListener::new(listener, auth_verify, transport_config);
 
     loop {
         let next = listener.accept().await?;
@@ -327,3 +338,18 @@ fn execute_command(command: &[u8]) -> ProcessOutput {
         },
     }
 }
+
+const ED25519_PRIVKEY: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49gAAAJDpgLSk6YC0
+pAAAAAtzc2gtZWQyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49g
+AAAECSeskxuEtJrr9L7ZkbpogXC5pKRNVHx1ueMX2h1XUnmek5zfpvwNc3MztTTpE90zLI
+1Ref4AwwRVdSFyJLGbj2AAAAB3Rlc3RrZXkBAgMEBQY=
+-----END OPENSSH PRIVATE KEY-----
+";
+
+pub(crate) const ECDSA_P256_PRIVKEY_BYTES: &[u8; 32] = &[
+    0x89, 0xdd, 0x0c, 0x96, 0x22, 0x85, 0x10, 0xec, 0x3c, 0xa4, 0xa1, 0xb8, 0xac, 0x2a, 0x77, 0xa8,
+    0xd4, 0x4d, 0xcb, 0x9d, 0x90, 0x25, 0xc6, 0xd8, 0x3a, 0x02, 0x74, 0x4f, 0x9e, 0x44, 0xcd, 0xa3,
+];

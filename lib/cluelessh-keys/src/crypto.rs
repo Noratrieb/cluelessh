@@ -3,7 +3,7 @@ use std::str::FromStr;
 use aes::cipher::{KeySizeUser, StreamCipher};
 use cluelessh_format::{Reader, Writer};
 
-use crate::PrivateKeyType;
+use crate::PrivateKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cipher {
@@ -141,13 +141,13 @@ pub struct KeyGenerationParams {
     pub key_type: KeyType,
 }
 
-pub(crate) fn generate_private_key(params: KeyGenerationParams) -> PrivateKeyType {
+pub(crate) fn generate_private_key(params: KeyGenerationParams) -> PrivateKey {
     match params.key_type {
         KeyType::Ed25519 => {
             let private_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
 
-            PrivateKeyType::Ed25519 {
-                public_key: private_key.verifying_key().to_bytes(),
+            PrivateKey::Ed25519 {
+                public_key: private_key.verifying_key(),
                 private_key: private_key.to_bytes(),
             }
         }

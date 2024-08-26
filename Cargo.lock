@@ -310,6 +310,7 @@ dependencies = [
  "clap",
  "cluelessh-agent-client",
  "cluelessh-format",
+ "cluelessh-keys",
  "cluelessh-transport",
  "eyre",
  "hex",
@@ -350,6 +351,7 @@ dependencies = [
 name = "cluelessh-faked"
 version = "0.1.0"
 dependencies = [
+ "cluelessh-keys",
  "cluelessh-protocol",
  "cluelessh-tokio",
  "eyre",
@@ -389,12 +391,13 @@ dependencies = [
  "base64",
  "bcrypt-pbkdf",
  "cluelessh-format",
- "cluelessh-transport",
  "ctr",
  "ed25519-dalek",
+ "p256",
  "pem",
  "rand",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -430,6 +433,7 @@ dependencies = [
  "base64",
  "chacha20",
  "cluelessh-format",
+ "cluelessh-keys",
  "crypto-bigint",
  "ctr",
  "ed25519-dalek",

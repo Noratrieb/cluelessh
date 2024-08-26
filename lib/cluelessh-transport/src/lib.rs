@@ -1,6 +1,5 @@
 pub mod client;
 mod crypto;
-pub mod key;
 pub mod packet;
 pub mod server;
 

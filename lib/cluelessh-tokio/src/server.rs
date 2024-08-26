@@ -24,6 +24,7 @@ use crate::{Channel, ChannelState, PendingChannel};
 pub struct ServerListener {
     listener: TcpListener,
     auth_verify: ServerAuthVerify,
+    transport_config: cluelessh_transport::server::ServerConfig
     // TODO ratelimits etc
 }
 
@@ -79,10 +80,11 @@ impl From<eyre::Report> for Error {
 }
 
 impl ServerListener {
-    pub fn new(listener: TcpListener, auth_verify: ServerAuthVerify) -> Self {
+    pub fn new(listener: TcpListener, auth_verify: ServerAuthVerify,  transport_config: cluelessh_transport::server::ServerConfig) -> Self {
         Self {
             listener,
             auth_verify,
+            transport_config,
         }
     }
 
@@ -93,12 +95,13 @@ impl ServerListener {
             conn,
             peer_addr,
             self.auth_verify.clone(),
+            self.transport_config.clone(),
         ))
     }
 }
 
 impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
-    pub fn new(stream: S, peer_addr: SocketAddr, auth_verify: ServerAuthVerify) -> Self {
+    pub fn new(stream: S, peer_addr: SocketAddr, auth_verify: ServerAuthVerify, transport_config: cluelessh_transport::server::ServerConfig) -> Self {
         let (operations_send, operations_recv) = tokio::sync::mpsc::channel(15);
         let (channel_ops_send, channel_ops_recv) = tokio::sync::mpsc::channel(15);
 
@@ -131,6 +134,7 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
             proto: cluelessh_protocol::ServerConnection::new(
                 cluelessh_transport::server::ServerConnection::new(
                     cluelessh_protocol::ThreadRngRand,
+                    transport_config,
                 ),
                 options,
                 auth_verify.auth_banner.clone(),

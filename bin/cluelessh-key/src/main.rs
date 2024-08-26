@@ -6,7 +6,7 @@ use std::{
 
 use base64::Engine;
 use clap::Parser;
-use cluelessh_keys::{KeyEncryptionParams, PrivateKeyType};
+use cluelessh_keys::{KeyEncryptionParams, PrivateKey};
 use eyre::{bail, Context};
 
 #[derive(clap::Parser)]
@@ -125,15 +125,21 @@ fn info(id_file: &Path, decrypt: bool, show_private: bool) -> eyre::Result<()> {
             None
         };
 
-        let keys = keys.parse_private(passphrase.as_deref())?;
+        let keys = keys.decrypt(passphrase.as_deref())?;
         for key in keys {
             println!("{} {}", key.private_key.public_key(), key.comment);
             if show_private {
                 match key.private_key {
-                    PrivateKeyType::Ed25519 { private_key, .. } => {
+                    PrivateKey::Ed25519 { private_key, .. } => {
                         println!(
                             "  private key: {}",
                             base64::prelude::BASE64_STANDARD_NO_PAD.encode(private_key)
+                        )
+                    }
+                    PrivateKey::EcdsaSha2NistP256 { private_key, .. } => {
+                        println!(
+                            "  private key: {}",
+                            base64::prelude::BASE64_STANDARD_NO_PAD.encode(private_key.to_bytes())
                         )
                     }
                 }

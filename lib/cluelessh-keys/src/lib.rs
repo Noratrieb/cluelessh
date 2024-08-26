@@ -1,10 +1,14 @@
 pub mod authorized_keys;
 mod crypto;
+pub mod public;
 pub mod signature;
 
+use std::fmt::Debug;
+
 use cluelessh_format::{Reader, Writer};
-use cluelessh_transport::key::PublicKey;
 use crypto::{Cipher, Kdf};
+
+use crate::public::PublicKey;
 
 // TODO: good typed error messages so the user knows what's going on
 
@@ -23,16 +27,34 @@ pub struct EncryptedPrivateKeys {
     pub encrypted_private_keys: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct PlaintextPrivateKey {
-    pub private_key: PrivateKeyType,
+    pub private_key: PrivateKey,
     pub comment: String,
     checkint: u32,
 }
 
-pub enum PrivateKeyType {
+impl Debug for PlaintextPrivateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaintextPrivateKey")
+            .field(
+                "public_key",
+                &format_args!("{}", self.private_key.public_key()),
+            )
+            .field("comment", &self.comment)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub enum PrivateKey {
     Ed25519 {
-        public_key: [u8; 32],
-        private_key: [u8; 32],
+        public_key: ed25519_dalek::VerifyingKey,
+        private_key: [u8; 32], // TODO: store a signing key!
+    },
+    EcdsaSha2NistP256 {
+        public_key: p256::ecdsa::VerifyingKey,
+        private_key: p256::ecdsa::SigningKey,
     },
 }
 
@@ -139,7 +161,7 @@ impl EncryptedPrivateKeys {
         Ok(data)
     }
 
-    pub fn parse_private(
+    pub fn decrypt(
         &self,
         passphrase: Option<&str>,
     ) -> cluelessh_format::Result<Vec<PlaintextPrivateKey>> {
@@ -159,15 +181,17 @@ impl EncryptedPrivateKeys {
         for pubkey in &self.public_keys {
             let keytype = match pubkey {
                 PublicKey::Ed25519 { public_key } => {
-                    // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#section-3.2.3>
+                    // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#name-eddsa-keys>
                     let alg = p.utf8_string()?;
-                    if alg != "ssh-ed25519" {
+                    if alg != pubkey.algorithm_name() {
                         return Err(cluelessh_format::ParseError(format!(
-                            "algorithm mismatch. pubkey: ssh-ed25519, privkey: {alg}"
+                            "algorithm mismatch. pubkey: {}, privkey: {alg}",
+                            pubkey.algorithm_name()
                         )));
                     }
+
                     let enc_a = p.string()?; // ENC(A)
-                    if enc_a != public_key {
+                    if enc_a != public_key.as_bytes() {
                         return Err(cluelessh_format::ParseError(format!("public key mismatch")));
                     }
                     let k_enc_a = p.string()?; // k || ENC(A)
@@ -178,15 +202,41 @@ impl EncryptedPrivateKeys {
                         )));
                     }
                     let (k, enc_a) = k_enc_a.split_at(32);
-                    if enc_a != public_key {
+                    if enc_a != public_key.as_bytes() {
                         // Yes, ed25519 SSH keys seriously store the public key THREE TIMES.
                         return Err(cluelessh_format::ParseError(format!("public key mismatch")));
                     }
                     let private_key = k.try_into().unwrap();
-                    PrivateKeyType::Ed25519 {
+                    PrivateKey::Ed25519 {
                         public_key: *public_key,
                         private_key,
                     }
+                }
+                PublicKey::EcdsaSha2NistP256 { public_key } => {
+                    // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#name-ecdsa-keys>
+                    let alg = p.utf8_string()?;
+                    if alg != pubkey.algorithm_name() {
+                        return Err(cluelessh_format::ParseError(format!(
+                            "algorithm mismatch. pubkey: {}, privkey: {alg}",
+                            pubkey.algorithm_name()
+                        )));
+                    }
+
+                    let curve_name = p.utf8_string()?;
+                    if curve_name != "nistp256" {
+                        return Err(cluelessh_format::ParseError(format!(
+                            "curve name mismatch. expected: nistp256, found: {curve_name}",
+                        )));
+                    }
+
+                    let q = p.string()?;
+                    if q != public_key.to_encoded_point(false).as_bytes() {
+                        return Err(cluelessh_format::ParseError(format!("public key mismatch")));
+                    }
+
+                    let _d = p.mpint()?;
+
+                    todo!()
                 }
             };
 
@@ -262,21 +312,32 @@ impl PlaintextPrivateKey {
         enc.u32(self.checkint);
         enc.u32(self.checkint);
 
-        match self.private_key {
-            PrivateKeyType::Ed25519 {
+        match &self.private_key {
+            PrivateKey::Ed25519 {
                 public_key,
                 private_key,
             } => {
-                // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#section-3.2.3>
+                // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#name-eddsa-keys>
                 enc.string(b"ssh-ed25519");
                 enc.string(public_key);
-                let combined = private_key.len() + public_key.len();
+                let combined = private_key.len() + public_key.as_bytes().len();
                 enc.u32(combined as u32);
-                enc.raw(&private_key);
-                enc.raw(&public_key);
-                enc.string(self.comment.as_bytes());
+                enc.raw(private_key);
+                enc.raw(public_key.as_bytes());
+            }
+            PrivateKey::EcdsaSha2NistP256 {
+                public_key,
+                private_key,
+            } => {
+                // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#name-ecdsa-keys>
+                enc.string(self.private_key.algorithm_name());
+                enc.string("nistp256");
+                enc.string(public_key.to_encoded_point(false));
+                enc.mpint(p256::U256::from(private_key.as_nonzero_scalar().as_ref()));
             }
         }
+
+        enc.string(self.comment.as_bytes());
 
         // uh..., i don't really now how much i need to pad so YOLO this here
         // TODO: pad properly.
@@ -310,17 +371,24 @@ impl PlaintextPrivateKey {
     }
 }
 
-impl PrivateKeyType {
+impl PrivateKey {
     pub fn public_key(&self) -> PublicKey {
         match *self {
             Self::Ed25519 { public_key, .. } => PublicKey::Ed25519 { public_key },
+            Self::EcdsaSha2NistP256 { public_key, .. } => {
+                PublicKey::EcdsaSha2NistP256 { public_key }
+            }
         }
+    }
+
+    pub fn algorithm_name(&self) -> &'static str {
+        self.public_key().algorithm_name()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{Cipher, EncryptedPrivateKeys, Kdf, KeyEncryptionParams, PrivateKeyType};
+    use crate::{Cipher, EncryptedPrivateKeys, Kdf, KeyEncryptionParams, PrivateKey};
 
     // ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHPaiIO6MePXM/QCJWVge1k4dsiefPr4taP9VJbCtXdx uwu
     // Password: 'test'
@@ -345,6 +413,17 @@ zukcSwhnKrg+wzw7/JZQAAAAA3V3dQEC
 -----END OPENSSH PRIVATE KEY-----
 ";
 
+    // ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHZTdlJoLNb701EWnahywBv032Aby+Piza7TzKW1H6Z//Hni/rBcUgnMmG+Kc4XWp6zgny3FMFpviuL01eJbpY8= uwu
+    // no password
+    const TEST_ECDSA_SHA2_NISTP256_NONE: &[u8] = b"-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS
+1zaGEyLW5pc3RwMjU2AAAACG5pc3RwMjU2AAAAQQR2U3ZSaCzW+9NRFp2ocsAb9N9gG8vj
+4s2u08yltR+mf/x54v6wXFIJzJhvinOF1qes4J8txTBab4ri9NXiW6WPAAAAoKQV4mmkFe
+JpAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHZTdlJoLNb701EW
+nahywBv032Aby+Piza7TzKW1H6Z//Hni/rBcUgnMmG+Kc4XWp6zgny3FMFpviuL01eJbpY
+8AAAAgVF0Z9J3CtkKpNt2IGTJZtBLK+QQKu/bUkp12gstIonUAAAADdXd1AQIDBAU=
+-----END OPENSSH PRIVATE KEY-----";
+
     #[test]
     fn ed25519_none() {
         let keys = EncryptedPrivateKeys::parse(TEST_ED25519_NONE).unwrap();
@@ -352,17 +431,44 @@ zukcSwhnKrg+wzw7/JZQAAAAA3V3dQEC
         assert_eq!(keys.cipher, Cipher::None);
         assert_eq!(keys.kdf, Kdf::None);
 
-        let decrypted = keys.parse_private(None).unwrap();
+        let decrypted = keys.decrypt(None).unwrap();
         assert_eq!(decrypted.len(), 1);
         let key = decrypted.first().unwrap();
         assert_eq!(key.comment, "uwu");
-        assert!(matches!(key.private_key, PrivateKeyType::Ed25519 { .. }));
+        assert!(matches!(key.private_key, PrivateKey::Ed25519 { .. }));
     }
 
     #[test]
     fn roundtrip_ed25519_none() {
         let keys = EncryptedPrivateKeys::parse(TEST_ED25519_NONE).unwrap();
-        let decrypted = keys.parse_private(None).unwrap();
+        let decrypted = keys.decrypt(None).unwrap();
+
+        let encrypted = decrypted[0]
+            .encrypt(KeyEncryptionParams::secure_or_none("".to_owned()))
+            .unwrap();
+
+        let bytes = encrypted.to_bytes();
+        assert_eq!(pem::parse(TEST_ED25519_NONE).unwrap().contents(), bytes);
+    }
+
+    #[test]
+    fn ecdsa_sha2_nistp256_none() {
+        let keys = EncryptedPrivateKeys::parse(TEST_ECDSA_SHA2_NISTP256_NONE).unwrap();
+        assert_eq!(keys.public_keys.len(), 1);
+        assert_eq!(keys.cipher, Cipher::None);
+        assert_eq!(keys.kdf, Kdf::None);
+
+        let decrypted = keys.decrypt(None).unwrap();
+        assert_eq!(decrypted.len(), 1);
+        let key = decrypted.first().unwrap();
+        assert_eq!(key.comment, "uwu");
+        assert!(matches!(key.private_key, PrivateKey::Ed25519 { .. }));
+    }
+
+    #[test]
+    fn roundtrip_ecdsa_sha2_nistp256_none() {
+        let keys = EncryptedPrivateKeys::parse(TEST_ECDSA_SHA2_NISTP256_NONE).unwrap();
+        let decrypted = keys.decrypt(None).unwrap();
 
         let encrypted = decrypted[0]
             .encrypt(KeyEncryptionParams::secure_or_none("".to_owned()))
@@ -379,17 +485,17 @@ zukcSwhnKrg+wzw7/JZQAAAAA3V3dQEC
         assert_eq!(keys.cipher, Cipher::Aes256Ctr);
         assert!(matches!(keys.kdf, Kdf::BCrypt { .. }));
 
-        let decrypted = keys.parse_private(Some("test")).unwrap();
+        let decrypted = keys.decrypt(Some("test")).unwrap();
         assert_eq!(decrypted.len(), 1);
         let key = decrypted.first().unwrap();
         assert_eq!(key.comment, "uwu");
-        assert!(matches!(key.private_key, PrivateKeyType::Ed25519 { .. }));
+        assert!(matches!(key.private_key, PrivateKey::Ed25519 { .. }));
     }
 
     #[test]
-    fn roundtrip_aes256ctr() {
+    fn roundtrip_ed25519_aes256ctr() {
         let keys = EncryptedPrivateKeys::parse(TEST_ED25519_NONE).unwrap();
-        let decrypted = keys.parse_private(None).unwrap();
+        let decrypted = keys.decrypt(None).unwrap();
 
         let encrypted = decrypted[0]
             .encrypt(KeyEncryptionParams::secure_or_none("".to_owned()))

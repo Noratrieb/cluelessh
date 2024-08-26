@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-crypto-bigint = "0.5.5"
+crypto-bigint = { version = "0.5.5", features = ["generic-array"] }
 
 [lints]
 workspace = true

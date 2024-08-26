@@ -155,7 +155,7 @@ impl ClientConnection {
                         ));
                     }
 
-                    let sup_algs = SupportedAlgorithms::secure();
+                    let sup_algs = SupportedAlgorithms::secure(&[]);
 
                     let _cookie = kexinit.array::<16>()?;
 

@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 cluelessh-agent-client = { path = "../../lib/cluelessh-agent-client" } 
 cluelessh-transport = { path = "../../lib/cluelessh-transport" } 
+cluelessh-keys = { path = "../../lib/cluelessh-keys" }
 
 clap = { version = "4.5.16", features = ["derive"] }
 eyre.workspace = true

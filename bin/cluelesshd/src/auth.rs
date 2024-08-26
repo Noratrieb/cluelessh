@@ -3,10 +3,8 @@
 use std::io;
 
 use cluelessh_keys::{
-    authorized_keys::{self, AuthorizedKeys},
-    PublicKeyWithComment,
+    authorized_keys::{self, AuthorizedKeys}, public::PublicKey, PublicKeyWithComment
 };
-use cluelessh_transport::key::PublicKey;
 use users::os::unix::UserExt;
 
 /// A known-authorized public key for a user.

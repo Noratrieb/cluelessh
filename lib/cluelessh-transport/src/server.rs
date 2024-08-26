@@ -20,7 +20,14 @@ pub struct ServerConnection {
     packet_transport: PacketTransport,
     rng: Box<dyn SshRng + Send + Sync>,
 
+    config: ServerConfig,
+
     plaintext_packets: VecDeque<Packet>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerConfig {
+    pub host_keys: Vec<cluelessh_keys::PlaintextPrivateKey>,
 }
 
 enum ServerState {
@@ -54,14 +61,14 @@ enum ServerState {
 }
 
 impl ServerConnection {
-    pub fn new(rng: impl SshRng + Send + Sync + 'static) -> Self {
+    pub fn new(rng: impl SshRng + Send + Sync + 'static, config: ServerConfig) -> Self {
         Self {
             state: ServerState::ProtoExchange {
                 ident_parser: ProtocolIdentParser::new(),
             },
             packet_transport: PacketTransport::new(),
             rng: Box::new(rng),
-
+            config,
             plaintext_packets: VecDeque::new(),
         }
     }
@@ -133,7 +140,7 @@ impl ServerConnection {
                 } => {
                     let kex = KeyExchangeInitPacket::parse(&packet.payload)?;
 
-                    let sup_algs = SupportedAlgorithms::secure();
+                    let sup_algs = SupportedAlgorithms::secure(&self.config.host_keys);
 
                     let kex_algorithm = sup_algs.key_exchange.find(kex.kex_algorithms.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
@@ -245,7 +252,7 @@ impl ServerConnection {
                         SERVER_IDENTIFICATION,
                         client_kexinit,
                         server_kexinit,
-                        &pub_hostkey.0,
+                        &pub_hostkey.to_wire_encoding(),
                         client_public_key,
                         &server_public_key,
                         &shared_secret,
@@ -259,7 +266,7 @@ impl ServerConnection {
                     // eprintln!("hash:              {:x?}", hash);
 
                     let packet = Packet::new_msg_kex_ecdh_reply(
-                        &pub_hostkey.0,
+                        &pub_hostkey.to_wire_encoding(),
                         &server_public_key,
                         &signature.0,
                     );
@@ -348,35 +355,12 @@ impl ServerConnection {
     }
 }
 
-/// Manually extracted from the key using <https://peterlyons.com/problog/2017/12/openssh-ed25519-private-key-file-format/>, probably wrong
-/// ```text
-/// ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOk5zfpvwNc3MztTTpE90zLI1Ref4AwwRVdSFyJLGbj2 testkey
-/// ```
-/// ```text
-/// -----BEGIN OPENSSH PRIVATE KEY-----
-/// b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-/// QyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49gAAAJDpgLSk6YC0
-/// pAAAAAtzc2gtZWQyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49g
-/// AAAECSeskxuEtJrr9L7ZkbpogXC5pKRNVHx1ueMX2h1XUnmek5zfpvwNc3MztTTpE90zLI
-/// 1Ref4AwwRVdSFyJLGbj2AAAAB3Rlc3RrZXkBAgMEBQY=
-/// -----END OPENSSH PRIVATE KEY-----
-/// ```
-// todo: remove this lol, lmao
-pub(crate) const ED25519_PRIVKEY_BYTES: &[u8; 32] = &[
-    0x92, 0x7a, 0xc9, 0x31, 0xb8, 0x4b, 0x49, 0xae, 0xbf, 0x4b, 0xed, 0x99, 0x1b, 0xa6, 0x88, 0x17,
-    0x0b, 0x9a, 0x4a, 0x44, 0xd5, 0x47, 0xc7, 0x5b, 0x9e, 0x31, 0x7d, 0xa1, 0xd5, 0x75, 0x27, 0x99,
-];
-
-pub(crate) const ECDSA_P256_PRIVKEY_BYTES: &[u8; 32] = &[
-    0x89, 0xdd, 0x0c, 0x96, 0x22, 0x85, 0x10, 0xec, 0x3c, 0xa4, 0xa1, 0xb8, 0xac, 0x2a, 0x77, 0xa8,
-    0xd4, 0x4d, 0xcb, 0x9d, 0x90, 0x25, 0xc6, 0xd8, 0x3a, 0x02, 0x74, 0x4f, 0x9e, 0x44, 0xcd, 0xa3,
-];
 
 #[cfg(test)]
 mod tests {
     use hex_literal::hex;
 
-    use crate::{packet::MsgKind, server::ServerConnection, SshRng};
+    use crate::{packet::MsgKind, server::{ServerConfig, ServerConnection}, SshRng};
 
     struct NoRng;
     impl SshRng for NoRng {
@@ -395,7 +379,7 @@ mod tests {
 
     #[test]
     fn protocol_exchange() {
-        let mut con = ServerConnection::new(NoRng);
+        let mut con = ServerConnection::new(NoRng, ServerConfig::default());
         con.recv_bytes(b"SSH-2.0-OpenSSH_9.7\r\n").unwrap();
         let msg = con.next_msg_to_send().unwrap();
         assert!(matches!(msg.0, MsgKind::ServerProtocolInfo(_)));
@@ -403,7 +387,7 @@ mod tests {
 
     #[test]
     fn protocol_exchange_slow_client() {
-        let mut con = ServerConnection::new(NoRng);
+        let mut con = ServerConnection::new(NoRng, ServerConfig::default());
         con.recv_bytes(b"SSH-2.0-").unwrap();
         con.recv_bytes(b"OpenSSH_9.7\r\n").unwrap();
         let msg = con.next_msg_to_send().unwrap();
@@ -463,7 +447,7 @@ mod tests {
             },
         ];
 
-        let mut con = ServerConnection::new(HardcodedRng(rng));
+        let mut con = ServerConnection::new(HardcodedRng(rng), ServerConfig::default());
         for part in conversation {
             con.recv_bytes(&part.client).unwrap();
             eprintln!("client: {:x?}", part.client);

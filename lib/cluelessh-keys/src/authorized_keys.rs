@@ -1,7 +1,6 @@
 use base64::Engine;
-use cluelessh_transport::key::PublicKey;
 
-use crate::PublicKeyWithComment;
+use crate::{public::PublicKey, PublicKeyWithComment};
 
 pub struct AuthorizedKeys {
     pub keys: Vec<PublicKeyWithComment>,
@@ -56,9 +55,7 @@ impl AuthorizedKeys {
 
 #[cfg(test)]
 mod tests {
-    use cluelessh_transport::key::PublicKey;
-
-    use crate::PublicKeyWithComment;
+    use crate::{public::PublicKey, PublicKeyWithComment};
 
     use super::AuthorizedKeys;
 
@@ -70,10 +67,16 @@ mod tests {
             keys.keys.as_slice(),
             [PublicKeyWithComment {
                 key: PublicKey::Ed25519 {
-                    public_key: [
-                        109, 39, 214, 41, 20, 27, 218, 216, 170, 134, 225, 237, 106, 64, 201, 122,
-                        234, 102, 172, 80, 161, 13, 179, 52, 154, 197, 62, 61, 118, 129, 58, 79,
-                    ],
+                    public_key: ed25519_dalek::VerifyingKey::from_bytes(
+                        &[
+                            109, 39, 214, 41, 20, 27, 218, 216, 170, 134, 225, 237, 106, 64, 201,
+                            122, 234, 102, 172, 80, 161, 13, 179, 52, 154, 197, 62, 61, 118, 129,
+                            58, 79,
+                        ]
+                        .try_into()
+                        .unwrap()
+                    )
+                    .unwrap(),
                 },
                 comment: "nora".into(),
             }]
@@ -86,17 +89,27 @@ mod tests {
         let keys = AuthorizedKeys::parse(keys).unwrap();
 
         let provided = PublicKey::Ed25519 {
-            public_key: [
-                109, 39, 214, 41, 20, 27, 218, 216, 170, 134, 225, 237, 106, 64, 201, 122, 234,
-                102, 172, 80, 161, 13, 179, 52, 154, 197, 62, 61, 118, 129, 58, 79,
-            ],
+            public_key: ed25519_dalek::VerifyingKey::from_bytes(
+                &[
+                    109, 39, 214, 41, 20, 27, 218, 216, 170, 134, 225, 237, 106, 64, 201, 122, 234,
+                    102, 172, 80, 161, 13, 179, 52, 154, 197, 62, 61, 118, 129, 58, 79,
+                ]
+                .try_into()
+                .unwrap(),
+            )
+            .unwrap(),
         };
 
         let flipped = PublicKey::Ed25519 {
-            public_key: [
-                0, 39, 214, 41, 20, 27, 218, 216, 170, 134, 225, 237, 106, 64, 201, 122, 234, 102,
-                172, 80, 161, 13, 179, 52, 154, 197, 62, 61, 118, 129, 58, 79,
-            ],
+            public_key: ed25519_dalek::VerifyingKey::from_bytes(
+                &[
+                    1, 39, 214, 41, 20, 27, 218, 216, 170, 134, 225, 237, 106, 64, 201, 122, 234,
+                    102, 172, 80, 161, 13, 179, 52, 154, 197, 62, 61, 118, 129, 58, 79,
+                ]
+                .try_into()
+                .unwrap(),
+            )
+            .unwrap(),
         };
 
         assert!(keys.contains(&provided).is_some());
@@ -119,10 +132,16 @@ mod tests {
             keys.keys.as_slice(),
             [PublicKeyWithComment {
                 key: PublicKey::Ed25519 {
-                    public_key: [
-                        109, 39, 214, 41, 20, 27, 218, 216, 170, 134, 225, 237, 106, 64, 201, 122,
-                        234, 102, 172, 80, 161, 13, 179, 52, 154, 197, 62, 61, 118, 129, 58, 79,
-                    ],
+                    public_key: ed25519_dalek::VerifyingKey::from_bytes(
+                        &[
+                            109, 39, 214, 41, 20, 27, 218, 216, 170, 134, 225, 237, 106, 64, 201,
+                            122, 234, 102, 172, 80, 161, 13, 179, 52, 154, 197, 62, 61, 118, 129,
+                            58, 79,
+                        ]
+                        .try_into()
+                        .unwrap()
+                    )
+                    .unwrap(),
                 },
                 comment: "".into(),
             }]

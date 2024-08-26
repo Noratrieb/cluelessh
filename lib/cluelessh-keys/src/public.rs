@@ -5,13 +5,19 @@
 use std::fmt::Display;
 
 use base64::Engine;
+use ed25519_dalek::VerifyingKey;
 use tracing::debug;
 
 use cluelessh_format::{ParseError, Reader, Writer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PublicKey {
-    Ed25519 { public_key: [u8; 32] },
+    Ed25519 {
+        public_key: ed25519_dalek::VerifyingKey,
+    },
+    EcdsaSha2NistP256 {
+        public_key: p256::ecdsa::VerifyingKey,
+    },
 }
 
 impl PublicKey {
@@ -28,7 +34,12 @@ impl PublicKey {
                     return Err(ParseError(format!("incorrect ed25519 len: {len}")));
                 }
                 let public_key = p.array::<32>()?;
+                let public_key = VerifyingKey::from_bytes(&public_key)
+                    .map_err(|_| ParseError(format!("invalid ed25519 public key")))?;
                 Self::Ed25519 { public_key }
+            }
+            "ecdsa-sha2-nistp256" => {
+                todo!()
             }
             _ => return Err(ParseError(format!("unsupported key type: {alg}"))),
         };
@@ -37,10 +48,17 @@ impl PublicKey {
 
     pub fn to_wire_encoding(&self) -> Vec<u8> {
         let mut p = Writer::new();
+        p.string(self.algorithm_name());
         match self {
             Self::Ed25519 { public_key } => {
-                p.string(b"ssh-ed25519");
-                p.string(public_key);
+                p.string(public_key.as_bytes());
+            }
+            Self::EcdsaSha2NistP256 { public_key } => {
+                // <https://datatracker.ietf.org/doc/html/rfc5656#section-3.1>
+                p.string(b"nistp256");
+                // > point compression MAY be used.
+                // But OpenSSH does not appear to support that, so let's NOT use it.
+                p.string(public_key.to_encoded_point(false).as_bytes());
             }
         }
         p.finish()
@@ -49,6 +67,7 @@ impl PublicKey {
     pub fn algorithm_name(&self) -> &'static str {
         match self {
             Self::Ed25519 { .. } => "ssh-ed25519",
+            Self::EcdsaSha2NistP256 { .. } => "ecdsa-sha2-nistp256",
         }
     }
 
@@ -70,12 +89,11 @@ impl PublicKey {
                     debug!("Invalid signature length");
                     return false;
                 };
-                let Ok(verifying_key) = ed25519_dalek::VerifyingKey::from_bytes(public_key) else {
-                    debug!("Invalid public key");
-                    return false;
-                };
 
-                verifying_key.verify_strict(data, &signature).is_ok()
+                public_key.verify_strict(data, &signature).is_ok()
+            }
+            PublicKey::EcdsaSha2NistP256 { .. } => {
+                todo!("ecdsa-sha2-nistp256 signature verification")
             }
         }
     }
@@ -86,8 +104,12 @@ impl Display for PublicKey {
         match self {
             Self::Ed25519 { .. } => {
                 let encoded_pubkey = b64encode(&self.to_wire_encoding());
-                write!(f, "ssh-ed25519 {encoded_pubkey}")
+                write!(f, "{} {encoded_pubkey}", self.algorithm_name())
             }
+            Self::EcdsaSha2NistP256 { .. } => {
+                let encoded_pubkey = b64encode(&self.to_wire_encoding());
+                write!(f, "{} {encoded_pubkey}", self.algorithm_name())
+            },
         }
     }
 }

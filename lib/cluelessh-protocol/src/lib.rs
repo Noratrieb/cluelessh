@@ -3,12 +3,14 @@ use std::collections::HashSet;
 use std::mem;
 
 use auth::AuthOption;
-pub use cluelessh_connection as connection;
 use cluelessh_connection::ChannelOperation;
+use tracing::debug;
+
+// Re-exports
+pub use cluelessh_connection as connection;
 pub use cluelessh_connection::{ChannelUpdate, ChannelUpdateKind};
 pub use cluelessh_transport as transport;
 pub use cluelessh_transport::{Result, SshStatus};
-use tracing::debug;
 
 pub struct ThreadRngRand;
 impl transport::SshRng for ThreadRngRand {

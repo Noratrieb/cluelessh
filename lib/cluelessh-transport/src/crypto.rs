@@ -1,6 +1,7 @@
 pub mod encrypt;
 
 use cluelessh_format::{Reader, Writer};
+use cluelessh_keys::{public::PublicKey, PlaintextPrivateKey, PrivateKey};
 use p256::ecdsa::signature::Signer;
 use sha2::Digest;
 
@@ -103,14 +104,12 @@ impl AlgorithmName for EncryptionAlgorithm {
         self.name
     }
 }
-
-pub struct EncodedSshPublicHostKey(pub Vec<u8>);
 pub struct EncodedSshSignature(pub Vec<u8>);
 
 pub struct HostKeySigningAlgorithm {
     name: &'static str,
     hostkey_private: Vec<u8>,
-    public_key: fn(private_key: &[u8]) -> EncodedSshPublicHostKey,
+    public_key: fn(private_key: &[u8]) -> PublicKey,
     sign: fn(private_key: &[u8], data: &[u8]) -> EncodedSshSignature,
     pub verify:
         fn(public_key: &[u8], message: &[u8], signature: &EncodedSshSignature) -> Result<()>,
@@ -126,7 +125,7 @@ impl HostKeySigningAlgorithm {
     pub fn sign(&self, data: &[u8]) -> EncodedSshSignature {
         (self.sign)(&self.hostkey_private, data)
     }
-    pub fn public_key(&self) -> EncodedSshPublicHostKey {
+    pub fn public_key(&self) -> PublicKey {
         (self.public_key)(&self.hostkey_private)
     }
 }
@@ -139,11 +138,7 @@ pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
             let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
             let public_key = key.verifying_key();
 
-            // <https://datatracker.ietf.org/doc/html/rfc8709#section-4>
-            let mut data = Writer::new();
-            data.string(b"ssh-ed25519");
-            data.string(public_key.as_bytes());
-            EncodedSshPublicHostKey(data.finish())
+            PublicKey::Ed25519 { public_key }
         },
         sign: |key, data| {
             let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
@@ -203,7 +198,7 @@ pub fn hostkey_ecdsa_sha2_p256(hostkey_private: Vec<u8>) -> HostKeySigningAlgori
             // > point compression MAY be used.
             // But OpenSSH does not appear to support that, so let's NOT use it.
             data.string(public_key.to_encoded_point(false).as_bytes());
-            EncodedSshPublicHostKey(data.finish())
+            todo!()
         },
         sign: |key, data| {
             let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();
@@ -239,8 +234,15 @@ impl<T: AlgorithmName> AlgorithmNegotiation<T> {
             }
         }
 
+        let we_support = self
+            .supported
+            .iter()
+            .map(|alg| alg.name())
+            .collect::<Vec<_>>()
+            .join(",");
+
         Err(peer_error!(
-            "peer does not support any matching algorithm: peer supports: {peer_supports:?}"
+            "peer does not support any matching algorithm: we support: {we_support:?}, peer supports: {peer_supports:?}"
         ))
     }
 }
@@ -258,16 +260,23 @@ pub struct SupportedAlgorithms {
 
 impl SupportedAlgorithms {
     /// A secure default using elliptic curves and AEAD.
-    pub fn secure() -> Self {
+    pub fn secure(host_keys: &[PlaintextPrivateKey]) -> Self {
+        let supported_host_keys = host_keys
+            .iter()
+            .map(|key| match &key.private_key {
+                PrivateKey::Ed25519 { private_key, .. } => hostkey_ed25519(private_key.to_vec()),
+                PrivateKey::EcdsaSha2NistP256 { private_key, .. } => {
+                    hostkey_ecdsa_sha2_p256(private_key.to_bytes().to_vec())
+                }
+            })
+            .collect();
+
         Self {
             key_exchange: AlgorithmNegotiation {
                 supported: vec![KEX_CURVE_25519_SHA256, KEX_ECDH_SHA2_NISTP256],
             },
             hostkey: AlgorithmNegotiation {
-                supported: vec![
-                    hostkey_ed25519(crate::server::ED25519_PRIVKEY_BYTES.to_vec()),
-                    hostkey_ecdsa_sha2_p256(crate::server::ECDSA_P256_PRIVKEY_BYTES.to_vec()),
-                ],
+                supported: supported_host_keys,
             },
             encryption_to_peer: AlgorithmNegotiation {
                 supported: vec![encrypt::CHACHA20POLY1305, encrypt::AES256_GCM],
