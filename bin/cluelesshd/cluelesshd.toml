@@ -1,0 +1,13 @@
+log_level = "info"
+
+[net]
+ip = "0.0.0.0"
+port = 2223
+
+[auth]
+host_keys = [
+    # "/etc/ssh/ssh_host_ed25519_key",
+    "./test_ed25519_key"
+]
+password_login = false
+banner = "welcome to my server!!!\r\ni hope you enjoy your stay.\r\n"

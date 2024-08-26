@@ -6,6 +6,9 @@ use cluelessh_keys::{
     authorized_keys::{self, AuthorizedKeys},
     public::{PublicKey, PublicKeyWithComment},
 };
+use cluelessh_protocol::auth::{CheckPubkey, VerifySignature};
+use eyre::eyre;
+use tracing::debug;
 use users::os::unix::UserExt;
 
 /// A known-authorized public key for a user.
@@ -52,5 +55,65 @@ impl UserPublicKey {
 
     pub fn verify_signature(&self, data: &[u8], signature: &[u8]) -> bool {
         self.0.key.verify_signature(data, signature)
+    }
+}
+
+pub async fn verify_signature(auth: VerifySignature) -> eyre::Result<bool> {
+    let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
+        return Ok(false);
+    };
+    if auth.pubkey_alg_name != public_key.algorithm_name() {
+        return Ok(false);
+    }
+
+    let result: std::result::Result<UserPublicKey, AuthError> =
+        UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
+
+    debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey signature");
+
+    match result {
+        Ok(user_key) => {
+            // Verify signature...
+
+            let sign_data = cluelessh_keys::signature::signature_data(
+                auth.session_identifier,
+                &auth.user,
+                &public_key,
+            );
+
+            if user_key.verify_signature(&sign_data, &auth.signature) {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        Err(
+            AuthError::UnknownUser
+            | AuthError::UnauthorizedPublicKey
+            | AuthError::NoAuthorizedKeys(_),
+        ) => Ok(false),
+        Err(AuthError::InvalidAuthorizedKeys(err)) => Err(eyre!(err)),
+    }
+}
+
+pub async fn check_pubkey(auth: CheckPubkey) -> eyre::Result<bool> {
+    let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
+        return Ok(false);
+    };
+    if auth.pubkey_alg_name != public_key.algorithm_name() {
+        return Ok(false);
+    }
+    let result = UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
+
+    debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey check");
+
+    match result {
+        Ok(_) => Ok(true),
+        Err(
+            AuthError::UnknownUser
+            | AuthError::UnauthorizedPublicKey
+            | AuthError::NoAuthorizedKeys(_),
+        ) => Ok(false),
+        Err(AuthError::InvalidAuthorizedKeys(err)) => Err(eyre!(err)),
     }
 }

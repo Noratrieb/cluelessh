@@ -1,19 +1,20 @@
 mod auth;
+mod config;
 mod pty;
 
 use std::{
     io,
     net::SocketAddr,
+    path::PathBuf,
     pin::Pin,
     process::{ExitStatus, Stdio},
     sync::Arc,
 };
 
-use auth::AuthError;
-use cluelessh_keys::{private::EncryptedPrivateKeys, public::PublicKey};
+use cluelessh_keys::{host_keys::HostKeySet, private::EncryptedPrivateKeys};
 use cluelessh_tokio::{server::ServerAuthVerify, Channel};
 use cluelessh_transport::server::ServerConfig;
-use eyre::{bail, eyre, Context, OptionExt, Result};
+use eyre::{bail, Context, OptionExt, Result};
 use pty::Pty;
 use rustix::termios::Winsize;
 use tokio::{
@@ -34,115 +35,28 @@ use users::os::unix::UserExt;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> eyre::Result<()> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let config = config::Config::find()?;
+
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    let addr = "0.0.0.0:2223".to_owned();
-
-    let addr = addr
-        .parse::<SocketAddr>()
-        .wrap_err_with(|| format!("failed to parse listen addr '{addr}'"))?;
-
+    let addr = SocketAddr::new(config.net.ip, config.net.port);
     info!(%addr, "Starting server");
 
-    let listener = TcpListener::bind(addr).await.wrap_err("binding listener")?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .wrap_err_with(|| format!("trying to listen on {addr}"))?;
 
     let auth_verify = ServerAuthVerify {
-        verify_password: None,
-        verify_signature: Some(Arc::new(|auth| {
-            Box::pin(async move {
-                let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
-                    return Ok(false);
-                };
-                if auth.pubkey_alg_name != public_key.algorithm_name() {
-                    return Ok(false);
-                }
-
-                let result: std::result::Result<auth::UserPublicKey, AuthError> =
-                    auth::UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
-
-                debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey signature");
-
-                match result {
-                    Ok(user_key) => {
-                        // Verify signature...
-
-                        let sign_data = cluelessh_keys::signature::signature_data(
-                            auth.session_identifier,
-                            &auth.user,
-                            &public_key,
-                        );
-
-                        if user_key.verify_signature(&sign_data, &auth.signature) {
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    }
-                    Err(
-                        AuthError::UnknownUser
-                        | AuthError::UnauthorizedPublicKey
-                        | AuthError::NoAuthorizedKeys(_),
-                    ) => Ok(false),
-                    Err(AuthError::InvalidAuthorizedKeys(err)) => Err(eyre!(err)),
-                }
-            })
-        })),
-        check_pubkey: Some(Arc::new(|auth| {
-            Box::pin(async move {
-                let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
-                    return Ok(false);
-                };
-                if auth.pubkey_alg_name != public_key.algorithm_name() {
-                    return Ok(false);
-                }
-                let result =
-                    auth::UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
-
-                debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey check");
-
-                match result {
-                    Ok(_) => Ok(true),
-                    Err(
-                        AuthError::UnknownUser
-                        | AuthError::UnauthorizedPublicKey
-                        | AuthError::NoAuthorizedKeys(_),
-                    ) => Ok(false),
-                    Err(AuthError::InvalidAuthorizedKeys(err)) => Err(eyre!(err)),
-                }
-            })
-        })),
-        auth_banner: Some("welcome to my server!!!\r\ni hope you enjoy your stay.\r\n".to_owned()),
+        verify_password: config.auth.password_login.then(|| todo!("password login")),
+        verify_signature: Some(Arc::new(|auth| Box::pin(auth::verify_signature(auth)))),
+        check_pubkey: Some(Arc::new(|auth| Box::pin(auth::check_pubkey(auth)))),
+        auth_banner: config.auth.banner,
     };
 
-    let mut host_keys = Vec::new();
-
-    let host_key_locations = ["/etc/ssh/ssh_host_ed25519_key", "./test_ed25519_key"];
-
-    for host_key_location in host_key_locations {
-        match tokio::fs::read_to_string(host_key_location).await {
-            Ok(key) => {
-                let key = EncryptedPrivateKeys::parse(key.as_bytes())
-                    .wrap_err_with(|| format!("invalid {host_key_location}"))?;
-                if key.requires_passphrase() {
-                    bail!("{host_key_location} must not require a passphrase");
-                }
-                let mut key = key
-                    .decrypt(None)
-                    .wrap_err_with(|| format!("invalid {host_key_location}"))?;
-                if key.len() != 1 {
-                    bail!("{host_key_location} must contain a single key");
-                }
-                host_keys.push(key.remove(0));
-
-                info!(?host_key_location, "Loaded host key")
-            }
-            Err(err) => {
-                debug!(?err, ?host_key_location, "Failed to load host key")
-            }
-        }
-    }
+    let host_keys = load_host_keys(&config.auth.host_keys).await?.into_keys();
 
     if host_keys.is_empty() {
         bail!("no host keys found");
@@ -171,6 +85,39 @@ async fn main() -> eyre::Result<()> {
             .instrument(span),
         );
     }
+}
+
+async fn load_host_keys(keys: &[PathBuf]) -> Result<HostKeySet> {
+    let mut host_keys = HostKeySet::new();
+
+    for key_path in keys {
+        load_host_key(key_path, &mut host_keys)
+            .await
+            .wrap_err_with(|| format!("loading host key at '{}'", key_path.display()))?;
+    }
+
+    Ok(host_keys)
+}
+
+async fn load_host_key(key_path: &PathBuf, host_keys: &mut HostKeySet) -> Result<()> {
+    let key = tokio::fs::read_to_string(key_path)
+        .await
+        .wrap_err("failed to open")?;
+    let key = EncryptedPrivateKeys::parse(key.as_bytes()).wrap_err("failed to parse")?;
+
+    if key.requires_passphrase() {
+        bail!("host key requires a passphrase, which is not allowed");
+    }
+    let mut key = key.decrypt(None).wrap_err("failed to parse")?;
+    if key.len() != 1 {
+        bail!("host key must contain a single key");
+    }
+    let key = key.remove(0);
+    let algorithm = key.private_key.algorithm_name();
+    host_keys.insert(key)?;
+
+    info!(?key_path, ?algorithm, "Loaded host key");
+    Ok(())
 }
 
 async fn handle_connection(

@@ -17,6 +17,8 @@ users = "0.11.0"
 futures = "0.3.30"
 thiserror = "1.0.63"
 cluelessh-keys = { version = "0.1.0", path = "../../lib/cluelessh-keys" }
+serde = { version = "1.0.209", features = ["derive"] }
+toml = "0.8.19"
 
 [lints]
 workspace = true
