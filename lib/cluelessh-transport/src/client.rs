@@ -4,7 +4,7 @@ use tracing::{debug, info, trace};
 
 use crate::{
     crypto::{
-        self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeySigningAlgorithm,
+        self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeyVerifyAlgorithm,
         KeyExchangeSecret, SupportedAlgorithms,
     },
     packet::{Packet, PacketTransport, ProtocolIdentParser},
@@ -36,7 +36,7 @@ enum ClientState {
         client_ident: Vec<u8>,
         server_ident: Vec<u8>,
         kex_secret: Option<KeyExchangeSecret>,
-        server_hostkey_algorithm: HostKeySigningAlgorithm,
+        server_hostkey_algorithm: HostKeyVerifyAlgorithm,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
         client_kexinit: Vec<u8>,
@@ -165,7 +165,7 @@ impl ClientConnection {
 
                     let server_hostkey_algorithm = kexinit.name_list()?;
                     let server_hostkey_algorithm =
-                        sup_algs.hostkey.find(server_hostkey_algorithm.0)?;
+                        sup_algs.hostkey_verify.find(server_hostkey_algorithm.0)?;
                     debug!(name = %server_hostkey_algorithm.name(), "Using host key algorithm");
 
                     let encryption_algorithms_client_to_server = kexinit.name_list()?;

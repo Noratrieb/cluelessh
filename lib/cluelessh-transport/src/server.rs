@@ -146,7 +146,7 @@ impl ServerConnection {
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
                     let server_host_key_algorithm =
-                        sup_algs.hostkey.find(kex.server_host_key_algorithms.0)?;
+                        sup_algs.hostkey_sign.find(kex.server_host_key_algorithms.0)?;
                     debug!(name = %server_host_key_algorithm.name(), "Using host key algorithm");
 
                     // TODO: Implement aes128-ctr
@@ -268,7 +268,7 @@ impl ServerConnection {
                     let packet = Packet::new_msg_kex_ecdh_reply(
                         &pub_hostkey.to_wire_encoding(),
                         &server_public_key,
-                        &signature.0,
+                        &signature.to_wire_encoding(),
                     );
 
                     self.packet_transport.queue_packet(packet);

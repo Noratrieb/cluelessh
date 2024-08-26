@@ -36,7 +36,7 @@ impl Debug for PlaintextPrivateKey {
 pub enum PrivateKey {
     Ed25519 {
         public_key: ed25519_dalek::VerifyingKey,
-        private_key: [u8; 32], // TODO: store a signing key!
+        private_key: ed25519_dalek::SigningKey,
     },
     EcdsaSha2NistP256 {
         public_key: p256::ecdsa::VerifyingKey,
@@ -326,9 +326,9 @@ impl PlaintextPrivateKey {
                 // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#name-eddsa-keys>
                 enc.string(b"ssh-ed25519");
                 enc.string(public_key);
-                let combined = private_key.len() + public_key.as_bytes().len();
+                let combined = private_key.as_bytes().len() + public_key.as_bytes().len();
                 enc.u32(combined as u32);
-                enc.raw(private_key);
+                enc.raw(private_key.as_bytes());
                 enc.raw(public_key.as_bytes());
             }
             PrivateKey::EcdsaSha2NistP256 {

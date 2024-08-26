@@ -1,11 +1,11 @@
 pub mod encrypt;
 
-use cluelessh_format::{Reader, Writer};
+use cluelessh_format::Reader;
 use cluelessh_keys::{
     private::{PlaintextPrivateKey, PrivateKey},
     public::PublicKey,
+    signature::Signature,
 };
-use p256::ecdsa::signature::Signer;
 use sha2::Digest;
 
 use crate::{
@@ -110,108 +110,73 @@ impl AlgorithmName for EncryptionAlgorithm {
 pub struct EncodedSshSignature(pub Vec<u8>);
 
 pub struct HostKeySigningAlgorithm {
+    private_key: PrivateKey,
+}
+
+impl AlgorithmName for HostKeySigningAlgorithm {
+    fn name(&self) -> &'static str {
+        self.private_key.algorithm_name()
+    }
+}
+
+impl HostKeySigningAlgorithm {
+    pub fn new(private_key: PrivateKey) -> Self {
+        Self { private_key }
+    }
+    pub fn sign(&self, data: &[u8]) -> Signature {
+        self.private_key.sign(data)
+    }
+    pub fn public_key(&self) -> PublicKey {
+        self.private_key.public_key()
+    }
+}
+
+pub struct HostKeyVerifyAlgorithm {
     name: &'static str,
-    hostkey_private: Vec<u8>,
-    public_key: fn(private_key: &[u8]) -> PublicKey,
-    sign: fn(private_key: &[u8], data: &[u8]) -> EncodedSshSignature,
     pub verify:
         fn(public_key: &[u8], message: &[u8], signature: &EncodedSshSignature) -> Result<()>,
 }
 
-impl AlgorithmName for HostKeySigningAlgorithm {
+impl AlgorithmName for HostKeyVerifyAlgorithm {
     fn name(&self) -> &'static str {
         self.name
     }
 }
 
-impl HostKeySigningAlgorithm {
-    pub fn sign(&self, data: &[u8]) -> EncodedSshSignature {
-        (self.sign)(&self.hostkey_private, data)
-    }
-    pub fn public_key(&self) -> PublicKey {
-        (self.public_key)(&self.hostkey_private)
-    }
-}
+const HOSTKEY_VERIFY_ED25519: HostKeyVerifyAlgorithm = HostKeyVerifyAlgorithm {
+    name: "ssh-ed25519",
+    verify: |public_key, message, signature| {
+        // Parse out public key
+        let mut public_key = Reader::new(public_key);
+        let public_key_alg = public_key.string()?;
+        if public_key_alg != b"ssh-ed25519" {
+            return Err(peer_error!("incorrect algorithm public host key"));
+        }
+        let public_key = public_key.string()?;
+        let Ok(public_key) = public_key.try_into() else {
+            return Err(peer_error!("incorrect length for public host key"));
+        };
+        let public_key = ed25519_dalek::VerifyingKey::from_bytes(public_key)
+            .map_err(|err| peer_error!("incorrect public host key: {err}"))?;
 
-pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
-    HostKeySigningAlgorithm {
-        name: "ssh-ed25519",
-        hostkey_private,
-        public_key: |key| {
-            let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
-            let public_key = key.verifying_key();
-            PublicKey::Ed25519 { public_key }
-        },
-        sign: |key, data| {
-            let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
-            let signature = key.sign(data);
+        // Parse out signature
+        let mut signature = Reader::new(&signature.0);
+        let alg = signature.string()?;
+        if alg != b"ssh-ed25519" {
+            return Err(peer_error!("incorrect algorithm for signature"));
+        }
+        let signature = signature.string()?;
+        let Ok(signature) = signature.try_into() else {
+            return Err(peer_error!("incorrect length for signature"));
+        };
+        let signature = ed25519_dalek::Signature::from_bytes(signature);
 
-            // <https://datatracker.ietf.org/doc/html/rfc8709#section-6>
-            let mut data = Writer::new();
-            data.string(b"ssh-ed25519");
-            data.string(signature.to_bytes());
-            EncodedSshSignature(data.finish())
-        },
-        verify: |public_key, message, signature| {
-            // Parse out public key
-            let mut public_key = Reader::new(public_key);
-            let public_key_alg = public_key.string()?;
-            if public_key_alg != b"ssh-ed25519" {
-                return Err(peer_error!("incorrect algorithm public host key"));
-            }
-            let public_key = public_key.string()?;
-            let Ok(public_key) = public_key.try_into() else {
-                return Err(peer_error!("incorrect length for public host key"));
-            };
-            let public_key = ed25519_dalek::VerifyingKey::from_bytes(public_key)
-                .map_err(|err| peer_error!("incorrect public host key: {err}"))?;
-
-            // Parse out signature
-            let mut signature = Reader::new(&signature.0);
-            let alg = signature.string()?;
-            if alg != b"ssh-ed25519" {
-                return Err(peer_error!("incorrect algorithm for signature"));
-            }
-            let signature = signature.string()?;
-            let Ok(signature) = signature.try_into() else {
-                return Err(peer_error!("incorrect length for signature"));
-            };
-            let signature = ed25519_dalek::Signature::from_bytes(signature);
-
-            // Verify
-            public_key
-                .verify_strict(message, &signature)
-                .map_err(|err| peer_error!("incorrect signature: {err}"))
-        },
-    }
-}
-pub fn hostkey_ecdsa_sha2_p256(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
-    HostKeySigningAlgorithm {
-        name: "ecdsa-sha2-nistp256",
-        hostkey_private,
-        public_key: |key| {
-            let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();
-            PublicKey::EcdsaSha2NistP256 {
-                public_key: *key.verifying_key(),
-            }
-        },
-        sign: |key, data| {
-            let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();
-            let signature: p256::ecdsa::Signature = key.sign(data);
-            let (r, s) = signature.split_scalars();
-
-            // <https://datatracker.ietf.org/doc/html/rfc5656#section-3.1.2>
-            let mut data = Writer::new();
-            data.string(b"ecdsa-sha2-nistp256");
-            let mut signature_blob = Writer::new();
-            signature_blob.mpint(p256::U256::from(r.as_ref()));
-            signature_blob.mpint(p256::U256::from(s.as_ref()));
-            data.string(signature_blob.finish());
-            EncodedSshSignature(data.finish())
-        },
-        verify: |_public_key, _message, _signature| todo!("ecdsa p256 verification"),
-    }
-}
+        // Verify
+        public_key
+            .verify_strict(message, &signature)
+            .map_err(|err| peer_error!("incorrect signature: {err}"))
+    },
+};
 
 pub struct AlgorithmNegotiation<T> {
     pub supported: Vec<T>,
@@ -244,7 +209,8 @@ impl<T: AlgorithmName> AlgorithmNegotiation<T> {
 
 pub struct SupportedAlgorithms {
     pub key_exchange: AlgorithmNegotiation<KexAlgorithm>,
-    pub hostkey: AlgorithmNegotiation<HostKeySigningAlgorithm>,
+    pub hostkey_sign: AlgorithmNegotiation<HostKeySigningAlgorithm>,
+    pub hostkey_verify: AlgorithmNegotiation<HostKeyVerifyAlgorithm>,
     pub encryption_to_peer: AlgorithmNegotiation<EncryptionAlgorithm>,
     pub encryption_from_peer: AlgorithmNegotiation<EncryptionAlgorithm>,
     pub mac_to_peer: AlgorithmNegotiation<&'static str>,
@@ -258,20 +224,18 @@ impl SupportedAlgorithms {
     pub fn secure(host_keys: &[PlaintextPrivateKey]) -> Self {
         let supported_host_keys = host_keys
             .iter()
-            .map(|key| match &key.private_key {
-                PrivateKey::Ed25519 { private_key, .. } => hostkey_ed25519(private_key.to_vec()),
-                PrivateKey::EcdsaSha2NistP256 { private_key, .. } => {
-                    hostkey_ecdsa_sha2_p256(private_key.to_bytes().to_vec())
-                }
-            })
+            .map(|key| HostKeySigningAlgorithm::new(key.private_key.clone()))
             .collect();
 
         Self {
             key_exchange: AlgorithmNegotiation {
                 supported: vec![KEX_CURVE_25519_SHA256, KEX_ECDH_SHA2_NISTP256],
             },
-            hostkey: AlgorithmNegotiation {
+            hostkey_sign: AlgorithmNegotiation {
                 supported: supported_host_keys,
+            },
+            hostkey_verify: AlgorithmNegotiation {
+                supported: vec![HOSTKEY_VERIFY_ED25519], // TODO: p256
             },
             encryption_to_peer: AlgorithmNegotiation {
                 supported: vec![encrypt::CHACHA20POLY1305, encrypt::AES256_GCM],

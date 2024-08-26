@@ -157,7 +157,7 @@ pub(crate) fn generate_private_key(params: KeyGenerationParams) -> PrivateKey {
 
             PrivateKey::Ed25519 {
                 public_key: private_key.verifying_key(),
-                private_key: private_key.to_bytes(),
+                private_key,
             }
         }
         KeyType::Ecdsa => {
