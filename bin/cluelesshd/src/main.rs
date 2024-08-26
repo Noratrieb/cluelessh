@@ -222,6 +222,8 @@ struct SessionState {
     process_exit_send: mpsc::Sender<Result<ExitStatus, io::Error>>,
     process_exit_recv: mpsc::Receiver<Result<ExitStatus, io::Error>>,
 
+    envs: Vec<(String, String)>,
+
     writer: Option<File>,
     reader: Option<File>,
 }
@@ -235,6 +237,7 @@ async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
         channel,
         process_exit_send,
         process_exit_recv,
+        envs: Vec::new(),
         writer: None,
         reader: None,
     };
@@ -338,8 +341,25 @@ impl SessionState {
                     ChannelRequest::Exec { .. } => {
                         todo!()
                     }
-                    ChannelRequest::ExitStatus { .. } => {}
-                    ChannelRequest::Env { .. } => {}
+                    ChannelRequest::Env {
+                        name,
+                        value,
+                        want_reply,
+                    } => match String::from_utf8(value) {
+                        Ok(value) => {
+                            self.envs.push((name, value));
+                            if want_reply {
+                                self.channel.send(ChannelOperationKind::Success).await?;
+                            }
+                        }
+                        Err(_) => {
+                            debug!("Trying to set");
+                            if want_reply {
+                                self.channel.send(ChannelOperationKind::Failure).await?;
+                            }
+                        }
+                    },
+                    ChannelRequest::ExitStatus { .. } => unreachable!("forbidden"),
                 };
             }
             ChannelUpdateKind::OpenFailed { .. } => todo!(),
@@ -388,6 +408,10 @@ impl SessionState {
         cmd.env("USER", user.name());
         cmd.uid(user.uid());
         cmd.gid(user.primary_group_id());
+
+        for (k, v) in &self.envs {
+            cmd.env(k, v);
+        }
 
         debug!(cmd = %shell.display(), uid = %user.uid(), gid = %user.primary_group_id(), "Executing process");
 
