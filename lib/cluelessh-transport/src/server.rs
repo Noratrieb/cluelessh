@@ -27,7 +27,7 @@ pub struct ServerConnection {
 
 #[derive(Debug, Clone, Default)]
 pub struct ServerConfig {
-    pub host_keys: Vec<cluelessh_keys::PlaintextPrivateKey>,
+    pub host_keys: Vec<cluelessh_keys::private::PlaintextPrivateKey>,
 }
 
 enum ServerState {
@@ -355,12 +355,15 @@ impl ServerConnection {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use hex_literal::hex;
 
-    use crate::{packet::MsgKind, server::{ServerConfig, ServerConnection}, SshRng};
+    use crate::{
+        packet::MsgKind,
+        server::{ServerConfig, ServerConnection},
+        SshRng,
+    };
 
     struct NoRng;
     impl SshRng for NoRng {

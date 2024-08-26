@@ -1,6 +1,6 @@
 use base64::Engine;
 
-use crate::{public::PublicKey, PublicKeyWithComment};
+use crate::public::{PublicKey, PublicKeyWithComment};
 
 pub struct AuthorizedKeys {
     pub keys: Vec<PublicKeyWithComment>,
@@ -55,7 +55,7 @@ impl AuthorizedKeys {
 
 #[cfg(test)]
 mod tests {
-    use crate::{public::PublicKey, PublicKeyWithComment};
+    use crate::public::{PublicKey, PublicKeyWithComment};
 
     use super::AuthorizedKeys;
 

@@ -4,7 +4,7 @@ mod pty;
 use std::{io, net::SocketAddr, process::ExitStatus, sync::Arc};
 
 use auth::AuthError;
-use cluelessh_keys::{public::PublicKey, EncryptedPrivateKeys};
+use cluelessh_keys::{private::EncryptedPrivateKeys, public::PublicKey};
 use cluelessh_tokio::{server::ServerAuthVerify, Channel};
 use cluelessh_transport::server::ServerConfig;
 use eyre::{bail, eyre, Context, OptionExt, Result};

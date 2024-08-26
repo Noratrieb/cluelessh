@@ -3,7 +3,7 @@ use std::str::FromStr;
 use aes::cipher::{KeySizeUser, StreamCipher};
 use cluelessh_format::{Reader, Writer};
 
-use crate::PrivateKey;
+use crate::private::PrivateKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cipher {
@@ -55,7 +55,7 @@ impl Cipher {
             }
         }
     }
-    
+
     pub(crate) fn block_size(&self) -> usize {
         // this is the "minimum" block size in core SSH, so I assume it's here as well?
         match self {
@@ -143,6 +143,7 @@ impl Kdf {
 
 pub enum KeyType {
     Ed25519,
+    Ecdsa,
 }
 
 pub struct KeyGenerationParams {
@@ -157,6 +158,14 @@ pub(crate) fn generate_private_key(params: KeyGenerationParams) -> PrivateKey {
             PrivateKey::Ed25519 {
                 public_key: private_key.verifying_key(),
                 private_key: private_key.to_bytes(),
+            }
+        }
+        KeyType::Ecdsa => {
+            let private_key = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+
+            PrivateKey::EcdsaSha2NistP256 {
+                public_key: *private_key.verifying_key(),
+                private_key,
             }
         }
     }

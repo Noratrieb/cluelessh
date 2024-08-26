@@ -1,7 +1,10 @@
 pub mod encrypt;
 
 use cluelessh_format::{Reader, Writer};
-use cluelessh_keys::{public::PublicKey, PlaintextPrivateKey, PrivateKey};
+use cluelessh_keys::{
+    private::{PlaintextPrivateKey, PrivateKey},
+    public::PublicKey,
+};
 use p256::ecdsa::signature::Signer;
 use sha2::Digest;
 

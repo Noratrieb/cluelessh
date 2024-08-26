@@ -2,6 +2,7 @@ mod readline;
 
 use std::{net::SocketAddr, sync::Arc};
 
+use cluelessh_keys::private::EncryptedPrivateKeys;
 use cluelessh_tokio::{server::ServerAuthVerify, Channel};
 use eyre::{Context, Result};
 use tokio::{
@@ -62,12 +63,12 @@ async fn main() -> eyre::Result<()> {
 
     let transport_config = cluelessh_protocol::transport::server::ServerConfig {
         host_keys: vec![
-            cluelessh_keys::EncryptedPrivateKeys::parse(ED25519_PRIVKEY.as_bytes())
+            EncryptedPrivateKeys::parse(ED25519_PRIVKEY.as_bytes())
                 .unwrap()
                 .decrypt(None)
                 .unwrap()
                 .remove(0),
-            cluelessh_keys::EncryptedPrivateKeys::parse(ECDSA_PRIVKEY.as_bytes())
+            EncryptedPrivateKeys::parse(ECDSA_PRIVKEY.as_bytes())
                 .unwrap()
                 .decrypt(None)
                 .unwrap()

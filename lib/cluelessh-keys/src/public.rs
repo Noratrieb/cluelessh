@@ -19,6 +19,12 @@ pub enum PublicKey {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublicKeyWithComment {
+    pub key: PublicKey,
+    pub comment: String,
+}
+
 impl PublicKey {
     /// Parses an SSH public key from its wire encoding as specified in
     /// RFC4253, RFC5656, and RFC8709.

@@ -6,7 +6,9 @@ use std::{
 
 use base64::Engine;
 use clap::Parser;
-use cluelessh_keys::{KeyEncryptionParams, PrivateKey};
+use cluelessh_keys::private::{
+    EncryptedPrivateKeys, KeyEncryptionParams, PlaintextPrivateKey, PrivateKey,
+};
 use eyre::{bail, Context};
 
 #[derive(clap::Parser)]
@@ -54,12 +56,14 @@ enum DebugCommand {
 #[derive(clap::ValueEnum, Clone)]
 enum KeyType {
     Ed25519,
+    Ecdsa,
 }
 
 impl Display for KeyType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ed25519 => f.write_str("ed25519"),
+            Self::Ecdsa => f.write_str("ecdsa"),
         }
     }
 }
@@ -82,7 +86,7 @@ fn main() -> eyre::Result<()> {
         } => {
             let file = std::fs::read(&id_file)
                 .wrap_err_with(|| format!("reading file {}", id_file.display()))?;
-            let keys = cluelessh_keys::EncryptedPrivateKeys::parse(&file)?;
+            let keys = EncryptedPrivateKeys::parse(&file)?;
             let passphrase = if keys.requires_passphrase() {
                 let phrase = rpassword::prompt_password("passphrase: ")?;
                 Some(phrase)
@@ -115,7 +119,7 @@ fn info(id_file: &Path, decrypt: bool, show_private: bool) -> eyre::Result<()> {
     let file =
         std::fs::read(id_file).wrap_err_with(|| format!("reading file {}", id_file.display()))?;
 
-    let keys = cluelessh_keys::EncryptedPrivateKeys::parse(&file)?;
+    let keys = EncryptedPrivateKeys::parse(&file)?;
 
     if decrypt {
         let passphrase = if keys.requires_passphrase() {
@@ -156,18 +160,24 @@ fn info(id_file: &Path, decrypt: bool, show_private: bool) -> eyre::Result<()> {
 fn generate(type_: KeyType, comment: String, path: &Path) -> eyre::Result<()> {
     let type_ = match type_ {
         KeyType::Ed25519 => cluelessh_keys::KeyType::Ed25519,
+        KeyType::Ecdsa => cluelessh_keys::KeyType::Ecdsa,
     };
 
     let passphrase = rpassword::prompt_password("Enter passphrase (empty for no passphrase): ")?;
 
-    let key = cluelessh_keys::PlaintextPrivateKey::generate(
+    let key = PlaintextPrivateKey::generate(
         comment,
         cluelessh_keys::KeyGenerationParams { key_type: type_ },
     );
 
     println!("{} {}", key.private_key.public_key(), key.comment);
 
-    let keys = key.encrypt(KeyEncryptionParams::secure_or_none(passphrase))?;
+    let params = if passphrase.is_empty() {
+        KeyEncryptionParams::plaintext()
+    } else {
+        KeyEncryptionParams::secure_encrypted(passphrase)
+    };
+    let keys = key.encrypt(params)?;
 
     let mut pubkey_path = path.to_path_buf().into_os_string();
     pubkey_path.push(".pub");
