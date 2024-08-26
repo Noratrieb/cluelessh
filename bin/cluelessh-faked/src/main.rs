@@ -1,3 +1,5 @@
+mod readline;
+
 use std::{net::SocketAddr, sync::Arc};
 
 use cluelessh_tokio::{server::ServerAuthVerify, Channel};
@@ -134,6 +136,8 @@ async fn handle_session_channel(
     mut channel: Channel,
     total_sent_data: Arc<Mutex<Vec<u8>>>,
 ) -> Result<()> {
+    let mut readline = None;
+
     loop {
         match channel.next_update().await {
             Ok(update) => match update {
@@ -141,6 +145,13 @@ async fn handle_session_channel(
                     let success = ChannelOperationKind::Success;
                     match req {
                         ChannelRequest::PtyReq { want_reply, .. } => {
+                            let mut new_readline = readline::InteractiveShell::new();
+                            let to_write = new_readline.bytes_to_write();
+                            if !to_write.is_empty() {
+                                channel.send(ChannelOperationKind::Data(to_write)).await?;
+                            }
+                            readline = Some(new_readline);
+
                             if want_reply {
                                 channel.send(success).await?;
                             }
@@ -176,13 +187,7 @@ async fn handle_session_channel(
                 }
                 ChannelUpdateKind::OpenFailed { .. } => todo!(),
                 ChannelUpdateKind::Data { data } => {
-                    let is_eof = data.contains(&0x04 /*EOF, Ctrl-D*/);
-
-                    // echo :3
-                    channel
-                        .send(ChannelOperationKind::Data(data.clone()))
-                        .await?;
-
+                    // Store sent data
                     let mut total_sent_data = total_sent_data.lock().await;
                     // arbitrary limit
                     if total_sent_data.len() < 50_000 {
@@ -195,11 +200,34 @@ async fn handle_session_channel(
                         channel.send(ChannelOperationKind::Close).await?;
                     }
 
-                    if is_eof {
-                        debug!("Received Ctrl-D, closing channel");
+                    if let Some(readline) = &mut readline {
+                        readline.recv_bytes(&data);
+                        let to_write = readline.bytes_to_write();
+                        if !to_write.is_empty() {
+                            channel.send(ChannelOperationKind::Data(to_write)).await?;
+                        }
 
-                        channel.send(ChannelOperationKind::Eof).await?;
-                        channel.send(ChannelOperationKind::Close).await?;
+                        if readline.should_exit() {
+                            debug!("Received Ctrl-D, closing channel");
+
+                            channel.send(ChannelOperationKind::Eof).await?;
+                            channel.send(ChannelOperationKind::Close).await?;
+                        }
+                    } else {
+                        // bad fallback behavior
+                        let is_eof = data.contains(&0x04 /*EOF, Ctrl-D*/);
+
+                        // echo :3
+                        channel
+                            .send(ChannelOperationKind::Data(data.clone()))
+                            .await?;
+
+                        if is_eof {
+                            debug!("Received Ctrl-D, closing channel");
+
+                            channel.send(ChannelOperationKind::Eof).await?;
+                            channel.send(ChannelOperationKind::Close).await?;
+                        }
                     }
                 }
                 ChannelUpdateKind::Open(_)
@@ -233,7 +261,7 @@ fn execute_command(command: &[u8]) -> ProcessOutput {
             stdout: b"what the hell".to_vec(),
         };
     };
-    match command {
+    match command.trim() {
         "uname -s -v -n -r -m" => ProcessOutput {
             status: 0,
             stdout: UNAME_SVNRM.to_vec(),
