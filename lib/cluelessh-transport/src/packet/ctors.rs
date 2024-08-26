@@ -124,6 +124,7 @@ ctors! {
     );
     fn new_msg_channel_window_adjust(SSH_MSG_CHANNEL_WINDOW_ADJUST; recipient_channel: u32, bytes_to_add: u32);
     fn new_msg_channel_data(SSH_MSG_CHANNEL_DATA; recipient_channel: u32, data: string);
+    fn new_msg_channel_extended_data(SSH_MSG_CHANNEL_EXTENDED_DATA; recipient_channel: u32, data_type_code: u32, data: string);
 
     fn new_msg_channel_eof(SSH_MSG_CHANNEL_EOF; recipient_channel: u32);
     fn new_msg_channel_close(SSH_MSG_CHANNEL_CLOSE; recipient_channel: u32);

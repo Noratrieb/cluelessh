@@ -300,13 +300,23 @@ async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
                 let Ok(read) = read else {
                     bail!("failed to read");
                 };
-                let _ = state.channel.send(ChannelOperationKind::Data(read_buf[..read].to_vec())).await;
+                if read == 0 {
+                    // EOF, close the stream.
+                    state.reader = None;
+                } else {
+                    let _ = state.channel.send(ChannelOperationKind::Data(read_buf[..read].to_vec())).await;
+                }
             }
             read = read_ext => {
                 let Ok(read) = read else {
                     bail!("failed to read");
                 };
-                let _ = state.channel.send(ChannelOperationKind::ExtendedData(1, read_ext_buf[..read].to_vec())).await;
+                if read == 0 {
+                    // EOF, close the stream.
+                    state.reader_ext = None;
+                } else {
+                    let _ = state.channel.send(ChannelOperationKind::ExtendedData(1, read_ext_buf[..read].to_vec())).await;
+                }
             }
         }
     }

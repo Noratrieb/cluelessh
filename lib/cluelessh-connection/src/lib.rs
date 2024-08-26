@@ -331,7 +331,9 @@ impl ChannelsState {
                         let limit = cmp::min(queued_data_extended.len(), peer_window_size as usize);
                         let data_to_send =
                             queued_data_extended.splice(..limit, []).collect::<Vec<_>>();
-                        self.send_data(our_channel, &data_to_send, Some(number));
+                        if !data_to_send.is_empty() {
+                            self.send_data(our_channel, &data_to_send, Some(number));
+                        }
                     }
                 }
             }
@@ -663,6 +665,8 @@ impl ChannelsState {
         data: &[u8],
         extended_code: Option<u32>,
     ) {
+        assert!(!data.is_empty());
+
         let channel = self.channel(channel_number).unwrap();
 
         let mut chunks = data.chunks(channel.peer_max_packet_size as usize);
@@ -680,7 +684,7 @@ impl ChannelsState {
                         // Send everything we can, which empties the window.
                         channel.peer_window_size -= rest;
                         assert_eq!(channel.peer_window_size, 0);
-                        self.send_data_packet(channel_number, to_send);
+                        self.send_data_packet(channel_number, to_send, extended_code);
                     }
 
                     // It's over, we have exhausted all window space.
@@ -710,21 +714,34 @@ impl ChannelsState {
             }
             trace!(channel = %channel_number, window = %channel.peer_window_size, "Remaining window on their side");
 
-            self.send_data_packet(channel_number, data);
+            self.send_data_packet(channel_number, data, extended_code);
         }
     }
 
     /// Send a single data packet.
     /// The caller needs to ensure the windowing and packet size requirements are upheld.
-    fn send_data_packet(&mut self, channel_number: ChannelNumber, data: &[u8]) {
+    fn send_data_packet(
+        &mut self,
+        channel_number: ChannelNumber,
+        data: &[u8],
+        extended_code: Option<u32>,
+    ) {
         assert!(!data.is_empty(), "Trying to send empty data packet");
 
-        trace!(%channel_number, amount = %data.len(), "Sending channel data");
+        if let Some(extended_code) = extended_code {
+            trace!(%channel_number, amount = %data.len(), %extended_code, "Sending extended channel data");
+        } else {
+            trace!(%channel_number, amount = %data.len(), "Sending channel data");
+        }
         let channel = self.channel(channel_number).unwrap();
         let peer = channel.peer_channel;
         assert!(channel.peer_max_packet_size >= data.len() as u32);
-        self.packets_to_send
-            .push_back(Packet::new_msg_channel_data(peer, data));
+        let packet = if let Some(extended_code) = extended_code {
+            Packet::new_msg_channel_extended_data(peer, extended_code, data)
+        } else {
+            Packet::new_msg_channel_data(peer, data)
+        };
+        self.packets_to_send.push_back(packet);
     }
 
     fn send_channel_success(&mut self, recipient_channel: u32) {
