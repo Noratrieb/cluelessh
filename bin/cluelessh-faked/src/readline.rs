@@ -25,10 +25,14 @@ impl InteractiveShell {
                     return;
                 }
                 b'\r' => {
-                    let output = super::execute_command(&self.line_buf);
+                    let output = if !self.line_buf.is_empty() {
+                        super::execute_command(&self.line_buf).stdout
+                    } else {
+                        Vec::new()
+                    };
                     self.line_buf.clear();
                     self.write(b"\r\n");
-                    self.write(&output.stdout);
+                    self.write(&output);
                     self.prompt();
                 }
                 // ESC

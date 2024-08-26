@@ -261,30 +261,69 @@ fn execute_command(command: &[u8]) -> ProcessOutput {
             stdout: b"what the hell".to_vec(),
         };
     };
+
+    // Some hardcoded commands
     match command.trim() {
-        "uname -s -v -n -r -m" => ProcessOutput {
-            status: 0,
-            stdout: UNAME_SVNRM.to_vec(),
-        },
-        "uname -a" => ProcessOutput {
-            status: 0,
-            stdout: UNAME_A.to_vec(),
-        },
-        "cat /proc/cpuinfo|grep name|cut -f2 -d':'|uniq -c ; uname -a" => ProcessOutput {
-            status: 0,
-            stdout: CPUINFO_UNAME_A.to_vec(),
-        },
+        "uname -s -v -n -r -m" => {
+            return ProcessOutput {
+                status: 0,
+                stdout: UNAME_SVNRM.to_vec(),
+            }
+        }
+        "uname -a" => {
+            return ProcessOutput {
+                status: 0,
+                stdout: UNAME_A.to_vec(),
+            }
+        }
+        "cat /proc/cpuinfo|grep name|cut -f2 -d':'|uniq -c ; uname -a" => {
+            return ProcessOutput {
+                status: 0,
+                stdout: CPUINFO_UNAME_A.to_vec(),
+            }
+        }
+        _ => {}
+    }
+
+    // Now, lex the string and do this nicely
+    let Some(parts) = shlex::split(command) else {
+        return ProcessOutput {
+            status: 1,
+            stdout: b"bash: invalid input\r\n".to_vec(),
+        };
+    };
+
+    let Some(argv0) = parts.first() else {
+        return ProcessOutput {
+            status: 1,
+            stdout: b"bash: invalid input\r\n".to_vec(),
+        };
+    };
+
+    match argv0.as_str().trim() {
         "true" => ProcessOutput {
             status: 0,
             stdout: b"".to_vec(),
         },
-        _ => {
-            let argv0 = command.split_ascii_whitespace().next().unwrap_or("");
-
-            ProcessOutput {
-                status: 127,
-                stdout: format!("bash: line 1: {argv0}: command not found\r\n").into_bytes(),
-            }
-        }
+        "cd" => ProcessOutput {
+            status: 0,
+            stdout: b"".to_vec(),
+        },
+        "ls" => ProcessOutput {
+            status: 0,
+            stdout: b"hpasswd index.php secrets.php\r\n".to_vec(),
+        },
+        "whoami" => ProcessOutput {
+            status: 0,
+            stdout: b"root\r\n".to_vec(),
+        },
+        "id" => ProcessOutput {
+            status: 0,
+            stdout: b"uid=0(root) gid=0(root) groups=0(root)\r\n".to_vec(),
+        },
+        _ => ProcessOutput {
+            status: 127,
+            stdout: format!("bash: line 1: {argv0}: command not found\r\n").into_bytes(),
+        },
     }
 }

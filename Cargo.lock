@@ -355,6 +355,7 @@ dependencies = [
  "eyre",
  "hex-literal",
  "rand",
+ "shlex",
  "tokio",
  "tracing",
  "tracing-subscriber",
