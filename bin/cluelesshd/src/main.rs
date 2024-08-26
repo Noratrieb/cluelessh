@@ -1,7 +1,13 @@
 mod auth;
 mod pty;
 
-use std::{io, net::SocketAddr, process::ExitStatus, sync::Arc};
+use std::{
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    process::{ExitStatus, Stdio},
+    sync::Arc,
+};
 
 use auth::AuthError;
 use cluelessh_keys::{private::EncryptedPrivateKeys, public::PublicKey};
@@ -12,7 +18,7 @@ use pty::Pty;
 use rustix::termios::Winsize;
 use tokio::{
     fs::File,
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::Command,
     sync::mpsc,
@@ -224,8 +230,12 @@ struct SessionState {
 
     envs: Vec<(String, String)>,
 
-    writer: Option<File>,
-    reader: Option<File>,
+    //// stdin
+    writer: Option<Pin<Box<dyn AsyncWrite + Send + Sync>>>,
+    /// stdout
+    reader: Option<Pin<Box<dyn AsyncRead + Send + Sync>>>,
+    /// stderr
+    reader_ext: Option<Pin<Box<dyn AsyncRead + Send + Sync>>>,
 }
 
 async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
@@ -240,14 +250,25 @@ async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
         envs: Vec::new(),
         writer: None,
         reader: None,
+        reader_ext: None,
     };
 
     let mut read_buf = [0; 1024];
+    let mut read_ext_buf = [0; 1024];
 
     loop {
         let read = async {
             match &mut state.reader {
                 Some(file) => file.read(&mut read_buf).await,
+                // Ensure that if this is None, the future never finishes so the state update and process exit can progress.
+                None => loop {
+                    tokio::task::yield_now().await;
+                },
+            }
+        };
+        let read_ext = async {
+            match &mut state.reader_ext {
+                Some(file) => file.read(&mut read_ext_buf).await,
                 // Ensure that if this is None, the future never finishes so the state update and process exit can progress.
                 None => loop {
                     tokio::task::yield_now().await;
@@ -280,6 +301,12 @@ async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
                     bail!("failed to read");
                 };
                 let _ = state.channel.send(ChannelOperationKind::Data(read_buf[..read].to_vec())).await;
+            }
+            read = read_ext => {
+                let Ok(read) = read else {
+                    bail!("failed to read");
+                };
+                let _ = state.channel.send(ChannelOperationKind::ExtendedData(1, read_ext_buf[..read].to_vec())).await;
             }
         }
     }
@@ -325,7 +352,7 @@ impl SessionState {
                             }
                         }
                     }
-                    ChannelRequest::Shell { want_reply } => match self.shell().await {
+                    ChannelRequest::Shell { want_reply } => match self.shell(None).await {
                         Ok(()) => {
                             if want_reply {
                                 self.channel.send(ChannelOperationKind::Success).await?;
@@ -338,9 +365,31 @@ impl SessionState {
                             }
                         }
                     },
-                    ChannelRequest::Exec { .. } => {
-                        todo!()
-                    }
+                    ChannelRequest::Exec {
+                        want_reply,
+                        command,
+                    } => match String::from_utf8(command) {
+                        Ok(command) => match self.shell(Some(&command)).await {
+                            Ok(()) => {
+                                if want_reply {
+                                    self.channel.send(ChannelOperationKind::Success).await?;
+                                }
+                            }
+                            Err(err) => {
+                                debug!(%err, "Failed to spawn shell");
+                                if want_reply {
+                                    self.channel.send(ChannelOperationKind::Failure).await?;
+                                }
+                            }
+                        },
+                        Err(err) => {
+                            debug!(%err, "Exec command is invalid UTF-8");
+
+                            if want_reply {
+                                self.channel.send(ChannelOperationKind::Failure).await?;
+                            }
+                        }
+                    },
                     ChannelRequest::Env {
                         name,
                         value,
@@ -368,10 +417,15 @@ impl SessionState {
                     writer.write_all(&data).await?;
                 }
             }
+            ChannelUpdateKind::Eof => {
+                if let Some(writer) = &mut self.writer {
+                    writer.shutdown().await?;
+                }
+                self.writer = None;
+            }
             ChannelUpdateKind::Open(_)
             | ChannelUpdateKind::Closed
             | ChannelUpdateKind::ExtendedData { .. }
-            | ChannelUpdateKind::Eof
             | ChannelUpdateKind::Success
             | ChannelUpdateKind::Failure => { /* ignore */ }
         }
@@ -383,12 +437,14 @@ impl SessionState {
         let controller = pty.controller().try_clone_to_owned()?;
 
         self.pty = Some(pty);
-        self.writer = Some(File::from_std(std::fs::File::from(controller.try_clone()?)));
-        self.reader = Some(File::from_std(std::fs::File::from(controller)));
+        self.writer = Some(Box::pin(File::from_std(std::fs::File::from(
+            controller.try_clone()?,
+        ))));
+        self.reader = Some(Box::pin(File::from_std(std::fs::File::from(controller))));
         Ok(())
     }
 
-    async fn shell(&mut self) -> Result<()> {
+    async fn shell(&mut self, shell_command: Option<&str>) -> Result<()> {
         let user = self.user.clone();
         let user = tokio::task::spawn_blocking(move || users::get_user_by_name(&user))
             .await?
@@ -397,10 +453,18 @@ impl SessionState {
         let shell = user.shell();
 
         let mut cmd = Command::new(shell);
+        if let Some(shell_command) = shell_command {
+            cmd.arg("-c");
+            cmd.arg(shell_command);
+        }
         cmd.env_clear();
 
         if let Some(pty) = &self.pty {
             pty.start_session_for_command(&mut cmd)?;
+        } else {
+            cmd.stdin(Stdio::piped());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
         }
 
         // TODO: **user** home directory
@@ -416,6 +480,16 @@ impl SessionState {
         debug!(cmd = %shell.display(), uid = %user.uid(), gid = %user.primary_group_id(), "Executing process");
 
         let mut shell = cmd.spawn()?;
+
+        if self.pty.is_none() {
+            let stdin = shell.stdin.take().unwrap();
+            let stdout = shell.stdout.take().unwrap();
+            let stderr = shell.stderr.take().unwrap();
+
+            self.writer = Some(Box::pin(stdin));
+            self.reader = Some(Box::pin(stdout));
+            self.reader_ext = Some(Box::pin(stderr));
+        }
 
         let process_exit_send = self.process_exit_send.clone();
         tokio::spawn(async move {

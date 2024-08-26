@@ -451,6 +451,7 @@ dependencies = [
 name = "cluelesshd"
 version = "0.1.0"
 dependencies = [
+ "cluelessh-format",
  "cluelessh-keys",
  "cluelessh-protocol",
  "cluelessh-tokio",

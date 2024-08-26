@@ -1,6 +1,3 @@
 #!/usr/bin/env bash
 
-# disabled, TODO
-exit 0
-
-echo | ssh -p "$PORT" "$HOST"
+printf $"echo jdklfsjdöklfd" | ssh -p "$PORT" "$HOST" | grep jdklfsjdöklfd

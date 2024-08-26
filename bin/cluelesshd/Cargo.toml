@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+cluelessh-format = { path = "../../lib/cluelessh-format" }
 cluelessh-protocol = { path = "../../lib/cluelessh-protocol" }
 cluelessh-tokio = { path = "../../lib/cluelessh-tokio" }
 cluelessh-transport = { path = "../../lib/cluelessh-transport" }
