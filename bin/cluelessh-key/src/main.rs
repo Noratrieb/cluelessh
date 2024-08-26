@@ -133,13 +133,13 @@ fn info(id_file: &Path, decrypt: bool, show_private: bool) -> eyre::Result<()> {
                     PrivateKey::Ed25519 { private_key, .. } => {
                         println!(
                             "  private key: {}",
-                            base64::prelude::BASE64_STANDARD_NO_PAD.encode(private_key)
+                            base64::prelude::BASE64_STANDARD.encode(private_key)
                         )
                     }
                     PrivateKey::EcdsaSha2NistP256 { private_key, .. } => {
                         println!(
                             "  private key: {}",
-                            base64::prelude::BASE64_STANDARD_NO_PAD.encode(private_key.to_bytes())
+                            base64::prelude::BASE64_STANDARD.encode(private_key.to_bytes())
                         )
                     }
                 }

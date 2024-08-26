@@ -179,7 +179,7 @@ impl EncryptedPrivateKeys {
         let mut result_keys = Vec::new();
 
         for pubkey in &self.public_keys {
-            let keytype = match pubkey {
+            let keytype = match *pubkey {
                 PublicKey::Ed25519 { public_key } => {
                     // <https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent#name-eddsa-keys>
                     let alg = p.utf8_string()?;
@@ -208,7 +208,7 @@ impl EncryptedPrivateKeys {
                     }
                     let private_key = k.try_into().unwrap();
                     PrivateKey::Ed25519 {
-                        public_key: *public_key,
+                        public_key,
                         private_key,
                     }
                 }
@@ -234,9 +234,16 @@ impl EncryptedPrivateKeys {
                         return Err(cluelessh_format::ParseError(format!("public key mismatch")));
                     }
 
-                    let _d = p.mpint()?;
+                    let d = p.mpint()?;
 
-                    todo!()
+                    let private_key = p256::ecdsa::SigningKey::from_slice(d).map_err(|_| {
+                        cluelessh_format::ParseError(format!("invalid private key bytes"))
+                    })?;
+
+                    PrivateKey::EcdsaSha2NistP256 {
+                        public_key,
+                        private_key,
+                    }
                 }
             };
 
@@ -339,10 +346,13 @@ impl PlaintextPrivateKey {
 
         enc.string(self.comment.as_bytes());
 
-        // uh..., i don't really now how much i need to pad so YOLO this here
-        // TODO: pad properly.
-        enc.u8(1);
-        enc.u8(2);
+        let current_len = enc.current_length();
+        let block_size = params.cipher.block_size();
+        let pad_len = current_len.next_multiple_of(block_size) - current_len;
+
+        for i in 1..=(pad_len as u8) {
+            enc.u8(i);
+        }
 
         let mut encrypted_private_keys = enc.finish();
 
@@ -462,7 +472,7 @@ nahywBv032Aby+Piza7TzKW1H6Z//Hni/rBcUgnMmG+Kc4XWp6zgny3FMFpviuL01eJbpY
         assert_eq!(decrypted.len(), 1);
         let key = decrypted.first().unwrap();
         assert_eq!(key.comment, "uwu");
-        assert!(matches!(key.private_key, PrivateKey::Ed25519 { .. }));
+        assert!(matches!(key.private_key, PrivateKey::EcdsaSha2NistP256 { .. }));
     }
 
     #[test]
@@ -475,7 +485,22 @@ nahywBv032Aby+Piza7TzKW1H6Z//Hni/rBcUgnMmG+Kc4XWp6zgny3FMFpviuL01eJbpY
             .unwrap();
 
         let bytes = encrypted.to_bytes();
-        assert_eq!(pem::parse(TEST_ED25519_NONE).unwrap().contents(), bytes);
+
+        std::fs::write(
+            "expected",
+            pem::parse(TEST_ECDSA_SHA2_NISTP256_NONE)
+                .unwrap()
+                .contents(),
+        )
+        .unwrap();
+        std::fs::write("found", &bytes).unwrap();
+
+        assert_eq!(
+            pem::parse(TEST_ECDSA_SHA2_NISTP256_NONE)
+                .unwrap()
+                .contents(),
+            bytes
+        );
     }
 
     #[test]

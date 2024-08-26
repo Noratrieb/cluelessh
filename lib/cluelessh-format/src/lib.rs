@@ -81,8 +81,15 @@ impl<'a> Reader<'a> {
         Ok(NameList(list))
     }
 
-    pub fn mpint(&mut self) -> Result<MpInt<'a>> {
-        todo!("do correctly")
+    pub fn mpint(&mut self) -> Result<&'a [u8]> {
+        let mut s = self.string()?;
+
+        if s.first() == Some(&0) {
+            // Skip the leading zero byte in case the number is negative.
+            s = &s[1..];
+        }
+
+        Ok(s)
     }
 
     pub fn string(&mut self) -> Result<&'a [u8]> {
@@ -150,6 +157,10 @@ impl Writer {
 
     pub fn bool(&mut self, v: bool) {
         self.u8(v as u8);
+    }
+
+    pub fn current_length(&self) -> usize {
+        self.0.len()
     }
 
     pub fn finish(self) -> Vec<u8> {

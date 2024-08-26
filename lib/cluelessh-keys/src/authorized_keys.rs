@@ -23,7 +23,7 @@ impl AuthorizedKeys {
             let key_blob = parts
                 .next()
                 .ok_or_else(|| Error("missing key on line".to_owned()))?;
-            let key_blob = base64::prelude::BASE64_STANDARD_NO_PAD
+            let key_blob = base64::prelude::BASE64_STANDARD
                 .decode(key_blob)
                 .map_err(|err| Error(format!("invalid base64 encoding for key: {err}")))?;
             let comment = parts.next().unwrap_or_default();

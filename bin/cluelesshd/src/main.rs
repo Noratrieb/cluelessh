@@ -4,8 +4,9 @@ mod pty;
 use std::{io, net::SocketAddr, process::ExitStatus, sync::Arc};
 
 use auth::AuthError;
-use cluelessh_keys::public::PublicKey;
+use cluelessh_keys::{public::PublicKey, EncryptedPrivateKeys};
 use cluelessh_tokio::{server::ServerAuthVerify, Channel};
+use cluelessh_transport::server::ServerConfig;
 use eyre::{bail, eyre, Context, OptionExt, Result};
 use pty::Pty;
 use rustix::termios::Winsize;
@@ -31,7 +32,7 @@ async fn main() -> eyre::Result<()> {
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    let addr = "0.0.0.0:2222".to_owned();
+    let addr = "0.0.0.0:2223".to_owned();
 
     let addr = addr
         .parse::<SocketAddr>()
@@ -109,7 +110,39 @@ async fn main() -> eyre::Result<()> {
         auth_banner: Some("welcome to my server!!!\r\ni hope you enjoy your stay.\r\n".to_owned()),
     };
 
-    let config = todo!();
+    let mut host_keys = Vec::new();
+
+    let host_key_locations = ["/etc/ssh/ssh_host_ed25519_key", "./test_ed25519_key"];
+
+    for host_key_location in host_key_locations {
+        match tokio::fs::read_to_string(host_key_location).await {
+            Ok(key) => {
+                let key = EncryptedPrivateKeys::parse(key.as_bytes())
+                    .wrap_err_with(|| format!("invalid {host_key_location}"))?;
+                if key.requires_passphrase() {
+                    bail!("{host_key_location} must not require a passphrase");
+                }
+                let mut key = key
+                    .decrypt(None)
+                    .wrap_err_with(|| format!("invalid {host_key_location}"))?;
+                if key.len() != 1 {
+                    bail!("{host_key_location} must contain a single key");
+                }
+                host_keys.push(key.remove(0));
+
+                info!(?host_key_location, "Loaded host key")
+            }
+            Err(err) => {
+                debug!(?err, ?host_key_location, "Failed to load host key")
+            }
+        }
+    }
+
+    if host_keys.is_empty() {
+        bail!("no host keys found");
+    }
+
+    let config = ServerConfig { host_keys };
 
     let mut listener = cluelessh_tokio::server::ServerListener::new(listener, auth_verify, config);
 

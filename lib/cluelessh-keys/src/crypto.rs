@@ -55,6 +55,14 @@ impl Cipher {
             }
         }
     }
+    
+    pub(crate) fn block_size(&self) -> usize {
+        // this is the "minimum" block size in core SSH, so I assume it's here as well?
+        match self {
+            Self::None => 8,
+            Self::Aes256Ctr => 16, // looks like it takes the AES block size, even if AES-CTR isn't really a block cipher..
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

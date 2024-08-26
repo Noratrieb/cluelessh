@@ -67,6 +67,7 @@ async fn main() -> eyre::Result<()> {
                 .decrypt(None)
                 .unwrap()
                 .remove(0),
+            // TODO: add ECDSA support again!!
         ],
     };
 
@@ -348,8 +349,3 @@ AAAECSeskxuEtJrr9L7ZkbpogXC5pKRNVHx1ueMX2h1XUnmek5zfpvwNc3MztTTpE90zLI
 1Ref4AwwRVdSFyJLGbj2AAAAB3Rlc3RrZXkBAgMEBQY=
 -----END OPENSSH PRIVATE KEY-----
 ";
-
-pub(crate) const ECDSA_P256_PRIVKEY_BYTES: &[u8; 32] = &[
-    0x89, 0xdd, 0x0c, 0x96, 0x22, 0x85, 0x10, 0xec, 0x3c, 0xa4, 0xa1, 0xb8, 0xac, 0x2a, 0x77, 0xa8,
-    0xd4, 0x4d, 0xcb, 0x9d, 0x90, 0x25, 0xc6, 0xd8, 0x3a, 0x02, 0x74, 0x4f, 0x9e, 0x44, 0xcd, 0xa3,
-];
