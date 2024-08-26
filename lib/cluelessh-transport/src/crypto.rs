@@ -137,7 +137,6 @@ pub fn hostkey_ed25519(hostkey_private: Vec<u8>) -> HostKeySigningAlgorithm {
         public_key: |key| {
             let key = ed25519_dalek::SigningKey::from_bytes(key.try_into().unwrap());
             let public_key = key.verifying_key();
-
             PublicKey::Ed25519 { public_key }
         },
         sign: |key, data| {
@@ -189,16 +188,9 @@ pub fn hostkey_ecdsa_sha2_p256(hostkey_private: Vec<u8>) -> HostKeySigningAlgori
         hostkey_private,
         public_key: |key| {
             let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();
-            let public_key = key.verifying_key();
-            let mut data = Writer::new();
-
-            // <https://datatracker.ietf.org/doc/html/rfc5656#section-3.1>
-            data.string(b"ecdsa-sha2-nistp256");
-            data.string(b"nistp256");
-            // > point compression MAY be used.
-            // But OpenSSH does not appear to support that, so let's NOT use it.
-            data.string(public_key.to_encoded_point(false).as_bytes());
-            todo!()
+            PublicKey::EcdsaSha2NistP256 {
+                public_key: *key.verifying_key(),
+            }
         },
         sign: |key, data| {
             let key = p256::ecdsa::SigningKey::from_slice(key).unwrap();

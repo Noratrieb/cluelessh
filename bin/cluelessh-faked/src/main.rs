@@ -67,7 +67,11 @@ async fn main() -> eyre::Result<()> {
                 .decrypt(None)
                 .unwrap()
                 .remove(0),
-            // TODO: add ECDSA support again!!
+            cluelessh_keys::EncryptedPrivateKeys::parse(ECDSA_PRIVKEY.as_bytes())
+                .unwrap()
+                .decrypt(None)
+                .unwrap()
+                .remove(0),
         ],
     };
 
@@ -347,5 +351,17 @@ QyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49gAAAJDpgLSk6YC0
 pAAAAAtzc2gtZWQyNTUxOQAAACDpOc36b8DXNzM7U06RPdMyyNUXn+AMMEVXUhciSxm49g
 AAAECSeskxuEtJrr9L7ZkbpogXC5pKRNVHx1ueMX2h1XUnmek5zfpvwNc3MztTTpE90zLI
 1Ref4AwwRVdSFyJLGbj2AAAAB3Rlc3RrZXkBAgMEBQY=
+-----END OPENSSH PRIVATE KEY-----
+";
+
+const ECDSA_PRIVKEY: &str = "\
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS
+1zaGEyLW5pc3RwMjU2AAAACG5pc3RwMjU2AAAAQQTAzIMf0R8+7KPHyaad2AYc5PivpuiV
+Agf2THXdwHOXWoZz3pG/QBRGx+9n+ucIVT0lkWiMMwV86lSg/6w/DWNuAAAAqP8RaNj/EW
+jYAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBMDMgx/RHz7so8fJ
+pp3YBhzk+K+m6JUCB/ZMdd3Ac5dahnPekb9AFEbH72f65whVPSWRaIwzBXzqVKD/rD8NY2
+4AAAAhANOCLkd997DYpaix3I0BYDXDccdnRQ3SIMevrXTO2r+fAAAACm5vcmFAbml4b3MB
+AgMEBQ==
 -----END OPENSSH PRIVATE KEY-----
 ";
