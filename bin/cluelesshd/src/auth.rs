@@ -27,7 +27,6 @@ pub enum AuthError {
 }
 
 impl UserPublicKey {
-    /// Blocking!
     pub async fn for_user_and_key(
         user: String,
         provided_key: &PublicKey,

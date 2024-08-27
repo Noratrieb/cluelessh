@@ -19,6 +19,8 @@ pub struct ClientConnection {
 
     plaintext_packets: VecDeque<Packet>,
 
+    supported_algorithms: SupportedAlgorithms,
+
     pub abort_for_dos: bool,
 }
 
@@ -70,7 +72,7 @@ impl ClientConnection {
             },
             packet_transport,
             rng: Box::new(rng),
-
+            supported_algorithms: SupportedAlgorithms::secure(&[]),
             plaintext_packets: VecDeque::new(),
             abort_for_dos: false,
         }
@@ -160,43 +162,44 @@ impl ClientConnection {
                     let _cookie = kexinit.array::<16>()?;
 
                     let kex_algorithm = kexinit.name_list()?;
-                    let kex_algorithm = sup_algs.key_exchange.find(kex_algorithm.0)?;
+                    let kex_algorithm = sup_algs.key_exchange.find(true, kex_algorithm.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
                     let server_hostkey_algorithm = kexinit.name_list()?;
-                    let server_hostkey_algorithm =
-                        sup_algs.hostkey_verify.find(server_hostkey_algorithm.0)?;
+                    let server_hostkey_algorithm = sup_algs
+                        .hostkey_verify
+                        .find(true, server_hostkey_algorithm.0)?;
                     debug!(name = %server_hostkey_algorithm.name(), "Using host key algorithm");
 
                     let encryption_algorithms_client_to_server = kexinit.name_list()?;
                     let encryption_client_to_server = sup_algs
                         .encryption_to_peer
-                        .find(encryption_algorithms_client_to_server.0)?;
+                        .find(true, encryption_algorithms_client_to_server.0)?;
                     debug!(name = %encryption_client_to_server.name(), "Using encryption algorithm C->S");
 
                     let encryption_algorithms_server_to_client = kexinit.name_list()?;
                     let encryption_server_to_client = sup_algs
                         .encryption_from_peer
-                        .find(encryption_algorithms_server_to_client.0)?;
+                        .find(true, encryption_algorithms_server_to_client.0)?;
                     debug!(name = %encryption_server_to_client.name(), "Using encryption algorithm S->C");
 
                     let mac_algorithms_client_to_server = kexinit.name_list()?;
                     let _mac_client_to_server = sup_algs
                         .mac_to_peer
-                        .find(mac_algorithms_client_to_server.0)?;
+                        .find(true, mac_algorithms_client_to_server.0)?;
                     let mac_algorithms_server_to_client = kexinit.name_list()?;
                     let _mac_server_to_client = sup_algs
                         .mac_from_peer
-                        .find(mac_algorithms_server_to_client.0)?;
+                        .find(true, mac_algorithms_server_to_client.0)?;
 
                     let compression_algorithms_client_to_server = kexinit.name_list()?;
                     let _compression_client_to_server = sup_algs
                         .compression_to_peer
-                        .find(compression_algorithms_client_to_server.0)?;
+                        .find(true, compression_algorithms_client_to_server.0)?;
                     let compression_algorithms_server_to_client = kexinit.name_list()?;
                     let _compression_server_to_client = sup_algs
                         .compression_from_peer
-                        .find(compression_algorithms_server_to_client.0)?;
+                        .find(true, compression_algorithms_server_to_client.0)?;
 
                     let _languages_client_to_server = kexinit.name_list()?;
                     let _languages_server_to_client = kexinit.name_list()?;
@@ -361,18 +364,16 @@ impl ClientConnection {
         let mut kexinit = Writer::new();
         kexinit.u8(numbers::SSH_MSG_KEXINIT);
         kexinit.array(cookie);
-        kexinit.name_list(NameList::multi("curve25519-sha256,ecdh-sha2-nistp256")); // kex_algorithms
-        kexinit.name_list(NameList::multi("ssh-ed25519,ecdsa-sha2-nistp256")); // server_host_key_algorithms
-        kexinit.name_list(NameList::multi(
-            "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com",
-        )); // encryption_algorithms_client_to_server
-        kexinit.name_list(NameList::multi(
-            "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com",
-        )); // encryption_algorithms_server_to_client
-        kexinit.name_list(NameList::one("hmac-sha2-256")); // mac_algorithms_client_to_server
-        kexinit.name_list(NameList::one("hmac-sha2-256")); // mac_algorithms_server_to_client
-        kexinit.name_list(NameList::one("none")); // compression_algorithms_client_to_server
-        kexinit.name_list(NameList::one("none")); // compression_algorithms_server_to_client
+
+        let algs = &self.supported_algorithms;
+        kexinit.name_list(NameList::multi(&algs.key_exchange.to_name_list())); // kex_algorithms
+        kexinit.name_list(NameList::multi(&algs.hostkey_verify.to_name_list())); // server_host_key_algorithms
+        kexinit.name_list(NameList::multi(&algs.encryption_to_peer.to_name_list())); // encryption_algorithms_client_to_server
+        kexinit.name_list(NameList::multi(&algs.encryption_from_peer.to_name_list())); // encryption_algorithms_server_to_client
+        kexinit.name_list(NameList::multi(&algs.mac_to_peer.to_name_list())); // mac_algorithms_client_to_server
+        kexinit.name_list(NameList::multi(&algs.mac_from_peer.to_name_list())); // mac_algorithms_server_to_client
+        kexinit.name_list(NameList::multi(&algs.compression_to_peer.to_name_list())); // compression_algorithms_client_to_server
+        kexinit.name_list(NameList::multi(&algs.compression_from_peer.to_name_list())); // compression_algorithms_server_to_client
         kexinit.name_list(NameList::none()); // languages_client_to_server
         kexinit.name_list(NameList::none()); // languages_server_to_client
         kexinit.bool(false); // first_kex_packet_follows

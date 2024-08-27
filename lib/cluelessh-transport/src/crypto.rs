@@ -1,11 +1,11 @@
 pub mod encrypt;
 
-use cluelessh_format::Reader;
 use cluelessh_keys::{
     private::{PlaintextPrivateKey, PrivateKey},
     public::PublicKey,
     signature::Signature,
 };
+use p256::ecdsa::signature::Verifier;
 use sha2::Digest;
 
 use crate::{
@@ -148,51 +148,81 @@ impl AlgorithmName for HostKeyVerifyAlgorithm {
 const HOSTKEY_VERIFY_ED25519: HostKeyVerifyAlgorithm = HostKeyVerifyAlgorithm {
     name: "ssh-ed25519",
     verify: |public_key, message, signature| {
-        // Parse out public key
-        let mut public_key = Reader::new(public_key);
-        let public_key_alg = public_key.string()?;
-        if public_key_alg != b"ssh-ed25519" {
-            return Err(peer_error!("incorrect algorithm public host key"));
-        }
-        let public_key = public_key.string()?;
-        let Ok(public_key) = public_key.try_into() else {
-            return Err(peer_error!("incorrect length for public host key"));
-        };
-        let public_key = ed25519_dalek::VerifyingKey::from_bytes(public_key)
+        let public_key = PublicKey::from_wire_encoding(public_key)
             .map_err(|err| peer_error!("incorrect public host key: {err}"))?;
-
-        // Parse out signature
-        let mut signature = Reader::new(&signature.0);
-        let alg = signature.string()?;
-        if alg != b"ssh-ed25519" {
-            return Err(peer_error!("incorrect algorithm for signature"));
-        }
-        let signature = signature.string()?;
-        let Ok(signature) = signature.try_into() else {
-            return Err(peer_error!("incorrect length for signature"));
+        let PublicKey::Ed25519 { public_key } = public_key else {
+            return Err(peer_error!("incorrect algorithm public host key"));
         };
-        let signature = ed25519_dalek::Signature::from_bytes(signature);
 
-        // Verify
+        let signature = Signature::from_wire_encoding(&signature.0)
+            .map_err(|err| peer_error!("incorrect signature: {err}"))?;
+        let Signature::Ed25519 { signature } = signature else {
+            return Err(peer_error!("incorrect algorithm for signature"));
+        };
+
         public_key
             .verify_strict(message, &signature)
             .map_err(|err| peer_error!("incorrect signature: {err}"))
     },
 };
+const HOSTKEY_VERIFY_ECDSA_SHA2_NISTP256: HostKeyVerifyAlgorithm = HostKeyVerifyAlgorithm {
+    name: "ecdsa-sha2-nistp256",
+    verify: |public_key, message, signature| {
+        let public_key = PublicKey::from_wire_encoding(public_key)
+            .map_err(|err| peer_error!("incorrect public host key: {err}"))?;
 
+        dbg!(&public_key);
+        let PublicKey::EcdsaSha2NistP256 { public_key } = public_key else {
+            return Err(peer_error!("incorrect algorithm for public host key"));
+        };
+
+        let signature = Signature::from_wire_encoding(&signature.0)
+            .map_err(|err| peer_error!("incorrect signature: {err}"))?;
+        let Signature::EcdsaSha2NistP256 { signature } = signature else {
+            return Err(peer_error!("incorrect algorithm for signature"));
+        };
+
+        public_key
+            .verify(message, &signature)
+            .map_err(|err| peer_error!("incorrect signature: {err}"))
+    },
+};
 pub struct AlgorithmNegotiation<T> {
     pub supported: Vec<T>,
 }
 
 impl<T: AlgorithmName> AlgorithmNegotiation<T> {
-    pub fn find(mut self, peer_supports: &str) -> Result<T> {
-        for client_alg in peer_supports.split(',') {
-            if let Some(alg) = self
-                .supported
-                .iter()
-                .position(|alg| alg.name() == client_alg)
-            {
-                return Ok(self.supported.remove(alg));
+    pub fn to_name_list(&self) -> String {
+        self.supported
+            .iter()
+            .map(|alg| alg.name())
+            .collect::<Vec<&str>>()
+            .join(",")
+    }
+
+    pub fn find(mut self, this_is_client: bool, peer_supports: &str) -> Result<T> {
+        // <https://datatracker.ietf.org/doc/html/rfc4253#section-7.1>
+        // We let the client guide the algorithm search.
+
+        let my_algs = self
+            .supported
+            .iter()
+            .map(|alg| alg.name())
+            .collect::<Vec<_>>();
+        let peer_algs = peer_supports.split(',').collect();
+
+        let (client_algs, server_algs) = if this_is_client {
+            (my_algs, peer_algs)
+        } else {
+            (peer_algs, my_algs)
+        };
+
+        for alg_name in client_algs {
+            if server_algs.iter().any(|peer| *peer == alg_name) {
+                // Algorithm is supported
+                if let Some(alg) = self.supported.iter().position(|alg| alg.name() == alg_name) {
+                    return Ok(self.supported.remove(alg));
+                }
             }
         }
 
@@ -237,7 +267,7 @@ impl SupportedAlgorithms {
                 supported: supported_host_keys,
             },
             hostkey_verify: AlgorithmNegotiation {
-                supported: vec![HOSTKEY_VERIFY_ED25519], // TODO: p256
+                supported: vec![HOSTKEY_VERIFY_ECDSA_SHA2_NISTP256, HOSTKEY_VERIFY_ED25519],
             },
             encryption_to_peer: AlgorithmNegotiation {
                 supported: vec![encrypt::CHACHA20POLY1305, encrypt::AES256_GCM],
@@ -490,4 +520,42 @@ pub fn key_exchange_hash(
 
     let hash = hash.finalize();
     hash.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AlgorithmNegotiation;
+
+    #[test]
+    fn alg_negotation() {
+        let server_algs = [
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "rsa-sha2-512,rsa-sha2-256",
+        ];
+        let client_algs = ["ssh-ed25519", "ecdsa-sha2-nistp256"];
+
+        let we_are_client_negotiation = AlgorithmNegotiation {
+            supported: client_algs.to_vec(),
+        };
+
+        let chosen = we_are_client_negotiation
+            .find(
+                true,
+                &server_algs.iter().copied().collect::<Vec<&str>>().join(","),
+            )
+            .unwrap();
+        assert_eq!(chosen, "ssh-ed25519");
+
+        let we_are_server_negotiation = AlgorithmNegotiation {
+            supported: server_algs.to_vec(),
+        };
+        let chosen = we_are_server_negotiation
+            .find(
+                true,
+                &client_algs.iter().copied().collect::<Vec<&str>>().join(","),
+            )
+            .unwrap();
+        assert_eq!(chosen, "ssh-ed25519");
+    }
 }

@@ -13,6 +13,7 @@ use cluelessh_format::{NameList, Reader, Writer};
 use tracing::{debug, info, trace};
 
 // This is definitely who we are.
+// TODO: dont make cluelesshd do this
 pub const SERVER_IDENTIFICATION: &[u8] = b"SSH-2.0-OpenSSH_9.7\r\n";
 
 pub struct ServerConnection {
@@ -142,12 +143,12 @@ impl ServerConnection {
 
                     let sup_algs = SupportedAlgorithms::secure(&self.config.host_keys);
 
-                    let kex_algorithm = sup_algs.key_exchange.find(kex.kex_algorithms.0)?;
+                    let kex_algorithm = sup_algs.key_exchange.find(false, kex.kex_algorithms.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
 
                     let server_host_key_algorithm = sup_algs
                         .hostkey_sign
-                        .find(kex.server_host_key_algorithms.0)?;
+                        .find(false, kex.server_host_key_algorithms.0)?;
                     debug!(name = %server_host_key_algorithm.name(), "Using host key algorithm");
 
                     // TODO: Implement aes128-ctr
@@ -155,27 +156,27 @@ impl ServerConnection {
 
                     let encryption_client_to_server = sup_algs
                         .encryption_from_peer
-                        .find(kex.encryption_algorithms_client_to_server.0)?;
+                        .find(false, kex.encryption_algorithms_client_to_server.0)?;
                     debug!(name = %encryption_client_to_server.name(), "Using encryption algorithm C->S");
 
                     let encryption_server_to_client = sup_algs
                         .encryption_to_peer
-                        .find(kex.encryption_algorithms_server_to_client.0)?;
+                        .find(false, kex.encryption_algorithms_server_to_client.0)?;
                     debug!(name = %encryption_server_to_client.name(), "Using encryption algorithm S->C");
 
                     let mac_algorithm_client_to_server = sup_algs
                         .mac_from_peer
-                        .find(kex.mac_algorithms_client_to_server.0)?;
+                        .find(false, kex.mac_algorithms_client_to_server.0)?;
                     let mac_algorithm_server_to_client = sup_algs
                         .mac_to_peer
-                        .find(kex.mac_algorithms_server_to_client.0)?;
+                        .find(false, kex.mac_algorithms_server_to_client.0)?;
 
                     let compression_algorithm_client_to_server = sup_algs
                         .compression_from_peer
-                        .find(kex.compression_algorithms_client_to_server.0)?;
+                        .find(false, kex.compression_algorithms_client_to_server.0)?;
                     let compression_algorithm_server_to_client = sup_algs
                         .compression_to_peer
-                        .find(kex.compression_algorithms_server_to_client.0)?;
+                        .find(false, kex.compression_algorithms_server_to_client.0)?;
 
                     let _ = kex.languages_client_to_server;
                     let _ = kex.languages_server_to_client;

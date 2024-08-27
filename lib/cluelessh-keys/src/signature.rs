@@ -1,4 +1,4 @@
-use cluelessh_format::Writer;
+use cluelessh_format::{ParseError, Reader, Writer};
 
 use crate::{private::PrivateKey, public::PublicKey};
 
@@ -24,6 +24,49 @@ pub enum Signature {
 }
 
 impl Signature {
+    pub fn from_wire_encoding(data: &[u8]) -> Result<Self, ParseError> {
+        let mut sig = Reader::new(data);
+
+        let algorithm_name = sig.utf8_string()?;
+
+        let signature = match algorithm_name {
+            "ssh-ed25519" => {
+                // <https://datatracker.ietf.org/doc/html/rfc8709#name-signature-format>
+                let signature = sig
+                    .string()?
+                    .try_into()
+                    .map_err(|_| ParseError(format!("invalid signature length")))?;
+                Self::Ed25519 {
+                    signature: ed25519_dalek::Signature::from_bytes(&signature),
+                }
+            }
+            "ecdsa-sha2-nistp256" => {
+                // <https://datatracker.ietf.org/doc/html/rfc5656#section-3.1.2>
+                let r: [u8; 32] = sig
+                    .mpint()?
+                    .try_into()
+                    .map_err(|_| ParseError(format!("invalid r scaler byte length")))?;
+                let s: [u8; 32] = sig
+                    .mpint()?
+                    .try_into()
+                    .map_err(|_| ParseError(format!("invalid s scaler byte length")))?;
+
+                // TODO: fix stupid length
+
+                let signature = p256::ecdsa::Signature::from_scalars(r, s)
+                    .map_err(|_| ParseError(format!("invalid signature")))?;
+
+                Self::EcdsaSha2NistP256 { signature }
+            }
+            _ => {
+                return Err(ParseError(format!(
+                    "unsupported signature algorithm: {algorithm_name}"
+                )))
+            }
+        };
+        Ok(signature)
+    }
+
     pub fn to_wire_encoding(&self) -> Vec<u8> {
         let mut data = Writer::new();
         data.string(self.algorithm_name());
