@@ -8,17 +8,19 @@ use std::{
     io::{Read, Seek, SeekFrom},
     marker::PhantomData,
     net::SocketAddr,
-    os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
+    os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
     path::PathBuf,
     process::Stdio,
-    sync::Arc,
 };
 
 use clap::Parser;
-use cluelessh_keys::{host_keys::HostKeySet, private::EncryptedPrivateKeys, public::PublicKey};
-use cluelessh_tokio::server::{ServerAuth, SignWithHostKey};
+use cluelessh_keys::{
+    host_keys::HostKeySet,
+    private::{EncryptedPrivateKeys, PlaintextPrivateKey},
+    public::PublicKey,
+};
 use config::Config;
-use eyre::{bail, Context, OptionExt, Result};
+use eyre::{bail, eyre, Context, Result};
 use rustix::fs::MemfdFlags;
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
@@ -31,6 +33,33 @@ struct Args {
     /// The path to the config file
     #[arg(long)]
     config: Option<PathBuf>,
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> eyre::Result<()> {
+    match std::env::var("CLUELESSH_PRIVSEP_PROCESS") {
+        Ok(privsep_process) => match privsep_process.as_str() {
+            "connection" => connection::connection().await,
+            _ => bail!("unknown CLUELESSH_PRIVSEP_PROCESS: {privsep_process}"),
+        },
+        Err(_) => {
+            // Initial setup
+            let args = Args::parse();
+
+            let config = config::Config::find(&args)?;
+
+            setup_tracing(&config);
+
+            let addr: SocketAddr = SocketAddr::new(config.net.ip, config.net.port);
+            info!(%addr, "Starting server");
+
+            let listener = TcpListener::bind(addr)
+                .await
+                .wrap_err_with(|| format!("trying to listen on {addr}"))?;
+
+            main_process(config, listener).await
+        }
+    }
 }
 
 struct MemFd<T> {
@@ -68,46 +97,48 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned> MemFd<T> {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> eyre::Result<()> {
-    match std::env::var("CLUELESSH_PRIVSEP_PROCESS") {
-        Ok(privsep_process) => match privsep_process.as_str() {
-            "connection" => connection::connection().await,
-            _ => bail!("unknown CLUELESSH_PRIVSEP_PROCESS: {privsep_process}"),
-        },
-        Err(_) => {
-            // Initial setup
-            let args = Args::parse();
-
-            let config = config::Config::find(&args)?;
-
-            setup_tracing(&config);
-
-            let addr: SocketAddr = SocketAddr::new(config.net.ip, config.net.port);
-            info!(%addr, "Starting server");
-
-            let listener = TcpListener::bind(addr)
-                .await
-                .wrap_err_with(|| format!("trying to listen on {addr}"))?;
-
-            main_process(config, listener).await
-        }
-    }
-}
-
 const PRIVSEP_CONNECTION_STATE_FD: RawFd = 3;
+const PRIVSEP_CONNECTION_STREAM_FD: RawFd = 4;
+const PRIVSEP_CONNECTION_RPC_CLIENT_FD: RawFd = 5;
 
 /// The connection state passed to the child in the STATE_FD
 #[derive(Serialize, Deserialize)]
 struct SerializedConnectionState {
-    stream_fd: RawFd,
     peer_addr: SocketAddr,
     pub_host_keys: Vec<PublicKey>,
     config: Config,
-    rpc_client_fd: RawFd,
+
+    setuid: Option<u32>,
+    setgid: Option<u32>,
 }
 
 async fn main_process(config: Config, listener: TcpListener) -> Result<()> {
+    let user = match &config.security.unprivileged_user {
+        Some(user) => Some(
+            users::get_user_by_name(user).ok_or_else(|| eyre!("unprivileged {user} not found"))?,
+        ),
+        None => None,
+    };
+
+    let is_root = rustix::process::getuid().is_root();
+
+    if !is_root {
+        info!("Not running as root, disabling unprivileged setuid");
+    }
+
+    let setuid = match (is_root, &config.security.unprivileged_uid, &user) {
+        (false, _, _) => None,
+        (true, Some(uid), _) => Some(*uid),
+        (true, None, Some(user)) => Some(user.uid()),
+        (true, None, None) => None,
+    };
+    let setgid = match (is_root, &config.security.unprivileged_gid, &user) {
+        (false, _, _) => None,
+        (true, Some(uid), _) => Some(*uid),
+        (true, None, Some(user)) => Some(user.primary_group_id()),
+        (true, None, None) => None,
+    };
+
     let host_keys = load_host_keys(&config.auth.host_keys).await?.into_keys();
 
     if host_keys.is_empty() {
@@ -119,41 +150,21 @@ async fn main_process(config: Config, listener: TcpListener) -> Result<()> {
         .map(|key| key.private_key.public_key())
         .collect::<Vec<_>>();
 
-    let auth_operations = ServerAuth {
-        verify_password: config
-            .auth
-            .clone()
-            .password_login
-            .then(|| todo!("password login")),
-        verify_signature: Some(Arc::new(|auth| Box::pin(auth::verify_signature(auth)))),
-        check_pubkey: Some(Arc::new(|auth| Box::pin(auth::check_pubkey(auth)))),
-        auth_banner: config.auth.clone().banner,
-        sign_with_hostkey: Arc::new(move |msg: SignWithHostKey| {
-            let host_keys = host_keys.clone();
-            Box::pin(async move {
-                let private = host_keys
-                    .iter()
-                    .find(|privkey| privkey.private_key.public_key() == msg.public_key)
-                    .ok_or_eyre("missing private key")?;
-
-                Ok(private.private_key.sign(&msg.hash))
-            })
-        }),
-    };
-
     loop {
         let (next_stream, peer_addr) = listener.accept().await?;
 
         let config = config.clone();
         let pub_host_keys = pub_host_keys.clone();
-        let auth_operations = auth_operations.clone();
+        let host_keys = host_keys.clone();
         tokio::spawn(async move {
             let err = spawn_connection_child(
                 next_stream,
                 peer_addr,
                 pub_host_keys,
                 config,
-                auth_operations,
+                host_keys,
+                setuid,
+                setgid,
             )
             .await;
             if let Err(err) = err {
@@ -168,23 +179,22 @@ async fn spawn_connection_child(
     peer_addr: SocketAddr,
     pub_host_keys: Vec<PublicKey>,
     config: Config,
-    auth_operations: ServerAuth,
+    host_keys: Vec<PlaintextPrivateKey>,
+    setuid: Option<u32>,
+    setgid: Option<u32>,
 ) -> Result<()> {
-    let stream_fd = stream.as_fd();
+    let stream_fd = stream.as_raw_fd();
 
-    let rpc_server = rpc::Server::new(auth_operations).wrap_err("creating RPC server")?;
+    let mut rpc_server = rpc::Server::new(host_keys).wrap_err("creating RPC server")?;
 
-    // dup to avoid cloexec
-    // TODO: we should probably do this in the child? not that it matters that much.
-    let stream_fd = rustix::io::dup(stream_fd).wrap_err("duping tcp stream")?;
-    let rpc_client_fd = rustix::io::dup(rpc_server.client_fd()).wrap_err("duping tcp stream")?;
+    let rpc_client_fd = rpc_server.client_fd().as_raw_fd();
 
-    let config_fd = MemFd::new(&SerializedConnectionState {
-        stream_fd: stream_fd.as_raw_fd(),
+    let state_fd = MemFd::new(&SerializedConnectionState {
         peer_addr,
         pub_host_keys,
         config,
-        rpc_client_fd: rpc_client_fd.as_raw_fd(),
+        setuid,
+        setgid,
     })?;
 
     let exe = std::env::current_exe().wrap_err("failed to get current executable path")?;
@@ -195,30 +205,59 @@ async fn spawn_connection_child(
         .stderr(Stdio::inherit());
 
     unsafe {
-        let fd = config_fd.fd.as_raw_fd();
+        let state_fd = state_fd.fd.as_raw_fd();
         cmd.pre_exec(move || {
-            let mut state_fd = OwnedFd::from_raw_fd(PRIVSEP_CONNECTION_STATE_FD);
-            rustix::io::dup2(BorrowedFd::borrow_raw(fd), &mut state_fd)?;
-            // Ensure that it stays open in the child.
-            std::mem::forget(state_fd);
+            let mut new_state_fd = OwnedFd::from_raw_fd(PRIVSEP_CONNECTION_STATE_FD);
+            let mut new_stream_fd = OwnedFd::from_raw_fd(PRIVSEP_CONNECTION_STREAM_FD);
+            let mut new_rpc_client_fd = OwnedFd::from_raw_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD);
+
+            rustix::io::dup2(BorrowedFd::borrow_raw(state_fd), &mut new_state_fd)?;
+            rustix::io::dup2(BorrowedFd::borrow_raw(stream_fd), &mut new_stream_fd)?;
+            rustix::io::dup2(
+                BorrowedFd::borrow_raw(rpc_client_fd),
+                &mut new_rpc_client_fd,
+            )?;
+
+            // Ensure that all FDs are closed except stdout (for logging), and the 3 arguments.
+            drop(rustix::stdio::take_stdin());
+            drop(rustix::stdio::take_stderr());
+
+            let result = libc::close_range(
+                (PRIVSEP_CONNECTION_RPC_CLIENT_FD as u32) + 1,
+                std::ffi::c_uint::MAX,
+                0,
+            );
+            if result == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            // Ensure our new FDs stay open, as they will be acquired in the new process.
+            std::mem::forget((new_state_fd, new_stream_fd, new_rpc_client_fd));
             Ok(())
         });
     }
 
     let mut listen_child = cmd.spawn().wrap_err("failed to spawn listener process")?;
 
-    loop {
-        tokio::select! {
-            server_err = rpc_server.process() => {
-                error!(err = ?server_err, "RPC server error");
+    let mut exited = false;
+
+    tokio::select! {
+        server_err = rpc_server.process() => {
+            error!(err = ?server_err, "RPC server error");
+        }
+        status = listen_child.wait() => {
+            let status = status?;
+            if !status.success() {
+                bail!("connection child process failed: {}", status);
             }
-            status = listen_child.wait() => {
-                let status = status?;
-                if !status.success() {
-                    bail!("connection child process failed: {}", status);
-                }
-                break;
-            }
+            exited = true;
+        }
+    }
+
+    if !exited {
+        let status = listen_child.wait().await?;
+        if !status.success() {
+            bail!("connection child process failed: {}", status);
         }
     }
 
@@ -259,6 +298,7 @@ async fn load_host_key(key_path: &PathBuf, host_keys: &mut HostKeySet) -> Result
 }
 
 fn setup_tracing(config: &Config) {
+    // Log to stdout
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
 

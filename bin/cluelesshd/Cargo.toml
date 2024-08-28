@@ -12,7 +12,7 @@ tokio = { version = "1.39.2", features = ["full"] }
 tracing.workspace = true
 eyre.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
-rustix = { version = "0.38.34", features = ["pty", "termios", "procfs", "process", "stdio"] }
+rustix = { version = "0.38.34", features = ["pty", "termios", "procfs", "process", "stdio", "net"] }
 users = "0.11.0"
 futures = "0.3.30"
 thiserror = "1.0.63"
@@ -21,6 +21,7 @@ serde = { version = "1.0.209", features = ["derive"] }
 toml = "0.8.19"
 clap = { version = "4.5.16", features = ["derive"] }
 postcard = { version = "1.0.10", features = ["alloc"] }
+libc = "0.2.158"
 
 [lints]
 workspace = true

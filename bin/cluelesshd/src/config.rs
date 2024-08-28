@@ -14,6 +14,7 @@ pub struct Config {
     pub log_level: String,
     pub net: NetConfig,
     pub auth: AuthConfig,
+    pub security: SecurityConfig,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -32,6 +33,19 @@ pub struct AuthConfig {
     #[serde(default = "default_true")]
     pub password_login: bool,
     pub banner: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityConfig {
+    /// A hardcoded uid for an unprivileged user.
+    /// Mostly useful for testing.
+    pub unprivileged_uid: Option<u32>,
+    /// A hardcoded gid for an unprivileged user.
+    /// Mostly useful for testing.
+    pub unprivileged_gid: Option<u32>,
+    /// The username of an unprivileged user.
+    pub unprivileged_user: Option<String>,
 }
 
 impl Config {

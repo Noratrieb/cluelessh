@@ -16,13 +16,13 @@ pub struct Pty {
     controller: OwnedFd,
 
     user_pty: OwnedFd,
-    user_pty_name: String,
 }
 
 impl Pty {
     pub async fn new(term: String, winsize: Winsize, modes: Vec<u8>) -> Result<Self> {
         tokio::task::spawn_blocking(move || Self::new_blocking(term, winsize, modes)).await?
     }
+
     pub fn new_blocking(term: String, winsize: Winsize, modes: Vec<u8>) -> Result<Self> {
         // Create new PTY:
         let controller = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)
@@ -50,34 +50,45 @@ impl Pty {
             term,
             controller,
             user_pty,
-            user_pty_name,
         })
+    }
+
+    pub fn term(&self) -> String {
+        self.term.clone()
+    }
+
+    pub fn user_fd(&self) -> Result<OwnedFd> {
+        self.user_pty.try_clone().wrap_err("cloning PTY user")
     }
 
     pub fn controller(&self) -> BorrowedFd<'_> {
         self.controller.as_fd()
     }
+}
 
-    pub fn start_session_for_command(&self, cmd: &mut Command) -> Result<()> {
-        let user_pty = self.user_pty.try_clone()?;
-        unsafe {
-            cmd.pre_exec(move || {
-                rustix::pty::grantpt(&user_pty)?;
-                let pid = rustix::process::setsid()?;
-                rustix::process::ioctl_tiocsctty(&user_pty)?; // Set as the current controlling tty
-                rustix::termios::tcsetpgrp(&user_pty, pid)?; // Set current process as tty controller
+pub fn start_session_for_command(user_pty: OwnedFd, term: String, cmd: &mut Command) -> Result<()> {
+    let ttyname = rustix::termios::ttyname(&user_pty, Vec::new())?;
+    let tty_name = std::str::from_utf8(ttyname.as_bytes())
+        .wrap_err("pty name is invalid UTF-8")?
+        .to_owned();
 
-                // Setup stdio with PTY.
-                rustix::stdio::dup2_stdin(&user_pty)?;
-                rustix::stdio::dup2_stdout(&user_pty)?;
-                rustix::stdio::dup2_stderr(&user_pty)?;
+    unsafe {
+        cmd.pre_exec(move || {
+            rustix::pty::grantpt(&user_pty)?;
+            let pid = rustix::process::setsid()?;
+            rustix::process::ioctl_tiocsctty(&user_pty)?; // Set as the current controlling tty
+            rustix::termios::tcsetpgrp(&user_pty, pid)?; // Set current process as tty controller
 
-                Ok(())
-            });
-            cmd.env("TERM", &self.term);
-            cmd.env("SSH_TTY", &self.user_pty_name);
-        }
+            // Setup stdio with PTY.
+            rustix::stdio::dup2_stdin(&user_pty)?;
+            rustix::stdio::dup2_stdout(&user_pty)?;
+            rustix::stdio::dup2_stderr(&user_pty)?;
 
-        Ok(())
+            Ok(())
+        });
+        cmd.env("TERM", term);
+        cmd.env("SSH_TTY", tty_name);
     }
+
+    Ok(())
 }

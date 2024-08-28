@@ -11,3 +11,8 @@ host_keys = [
 ]
 password_login = false
 banner = "welcome to my server!!!\r\ni hope you enjoy your stay.\r\n"
+
+[security]
+unprivileged_uid = 355353
+unprivileged_gid = 355353
+#unprivileged_user = "sshd"

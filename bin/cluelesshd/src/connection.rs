@@ -1,14 +1,13 @@
 use std::{
-    io,
     os::fd::{BorrowedFd, FromRawFd, OwnedFd},
     pin::Pin,
-    process::{ExitStatus, Stdio},
     sync::Arc,
 };
 
 use crate::{
     pty::{self, Pty},
-    rpc, MemFd, SerializedConnectionState, PRIVSEP_CONNECTION_STATE_FD,
+    rpc, MemFd, SerializedConnectionState, PRIVSEP_CONNECTION_RPC_CLIENT_FD,
+    PRIVSEP_CONNECTION_STATE_FD, PRIVSEP_CONNECTION_STREAM_FD,
 };
 use cluelessh_protocol::{
     connection::{ChannelKind, ChannelOperationKind, ChannelRequest},
@@ -18,17 +17,15 @@ use cluelessh_tokio::{
     server::{ServerAuth, ServerConnection},
     Channel,
 };
-use eyre::{bail, OptionExt, Result, WrapErr};
+use eyre::{bail, ensure, Result, WrapErr};
 use rustix::termios::Winsize;
 use tokio::{
     fs::File,
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    process::Command,
     sync::mpsc,
 };
 use tracing::{debug, error, info, info_span, warn, Instrument};
-use users::os::unix::UserExt as _;
 
 pub async fn connection() -> Result<()> {
     rustix::fs::fcntl_getfd(unsafe { BorrowedFd::borrow_raw(PRIVSEP_CONNECTION_STATE_FD) })
@@ -38,22 +35,42 @@ pub async fn connection() -> Result<()> {
             .wrap_err("failed to open memfd")?;
     let state = memfd.read().wrap_err("failed to read state")?;
 
-    let config = state.config;
-
-    crate::setup_tracing(&config);
+    crate::setup_tracing(&state.config);
 
     let span = info_span!("connection", addr = %state.peer_addr);
 
-    let stream = unsafe { std::net::TcpStream::from_raw_fd(state.stream_fd) };
+    connection_inner(state).instrument(span).await
+}
+
+async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
+    let config = state.config;
+
+    if let Some(uid) = state.setgid {
+        debug!(?uid, "Setting GID to drop privileges");
+        let result = unsafe { libc::setgid(uid) };
+        if result == -1 {
+            return Err(std::io::Error::last_os_error()).wrap_err("failed to setgid");
+        }
+    }
+    if let Some(uid) = state.setuid {
+        debug!(?uid, "Setting UID to drop privileges");
+        let result = unsafe { libc::setuid(uid) };
+        if result == -1 {
+            return Err(std::io::Error::last_os_error()).wrap_err("failed to setuid");
+        }
+    }
+
+    let stream = unsafe { std::net::TcpStream::from_raw_fd(PRIVSEP_CONNECTION_STREAM_FD) };
     let stream = TcpStream::from_std(stream)?;
 
     let host_keys = state.pub_host_keys;
     let transport_config = cluelessh_transport::server::ServerConfig { host_keys };
 
-    let rpc_client = unsafe { OwnedFd::from_raw_fd(state.rpc_client_fd) };
+    let rpc_client = unsafe { OwnedFd::from_raw_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD) };
     let rpc_client1 = Arc::new(rpc::Client::from_fd(rpc_client)?);
     let rpc_client2 = rpc_client1.clone();
     let rpc_client3 = rpc_client1.clone();
+    let rpc_client4 = rpc_client1.clone();
 
     let auth_verify = ServerAuth {
         verify_password: config.auth.password_login.then(|| todo!("password login")),
@@ -93,26 +110,23 @@ pub async fn connection() -> Result<()> {
 
     let server_conn = ServerConnection::new(stream, state.peer_addr, auth_verify, transport_config);
 
-    connection_inner(server_conn).instrument(span).await;
-
-    Ok(())
-}
-
-async fn connection_inner(server_conn: ServerConnection<TcpStream>) {
-    if let Err(err) = handle_connection(server_conn).await {
+    if let Err(err) = handle_connection(server_conn, rpc_client4).await {
         if let Some(err) = err.downcast_ref::<std::io::Error>() {
             if err.kind() == std::io::ErrorKind::ConnectionReset {
-                return;
+                return Ok(());
             }
         }
 
         error!(?err, "error handling connection");
     }
     info!("Finished connection");
+
+    Ok(())
 }
 
 async fn handle_connection(
     mut conn: cluelessh_tokio::server::ServerConnection<TcpStream>,
+    rpc_client: Arc<rpc::Client>,
 ) -> Result<()> {
     info!(addr = %conn.peer_addr(), "Received a new connection");
 
@@ -145,9 +159,10 @@ async fn handle_connection(
         }
 
         while let Some(channel) = conn.next_new_channel() {
-            let user = conn.inner().authenticated_user().unwrap().to_owned();
+            let _user = conn.inner().authenticated_user().unwrap().to_owned();
             if *channel.kind() == ChannelKind::Session {
-                let channel_task = tokio::spawn(handle_session_channel(user, channel));
+                let channel_task =
+                    tokio::spawn(handle_session_channel(channel, rpc_client.clone()));
                 channel_tasks.push(Box::pin(async {
                     let result = channel_task.await;
                     result.wrap_err("task panicked").and_then(|result| result)
@@ -160,13 +175,14 @@ async fn handle_connection(
 }
 
 struct SessionState {
-    user: String,
     pty: Option<Pty>,
     channel: Channel,
-    process_exit_send: mpsc::Sender<Result<ExitStatus, io::Error>>,
-    process_exit_recv: mpsc::Receiver<Result<ExitStatus, io::Error>>,
+    process_exit_send: mpsc::Sender<Result<Option<i32>>>,
+    process_exit_recv: mpsc::Receiver<Result<Option<i32>>>,
 
     envs: Vec<(String, String)>,
+
+    rpc_client: Arc<rpc::Client>,
 
     //// stdin
     writer: Option<Pin<Box<dyn AsyncWrite + Send + Sync>>>,
@@ -176,16 +192,18 @@ struct SessionState {
     reader_ext: Option<Pin<Box<dyn AsyncRead + Send + Sync>>>,
 }
 
-async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
+async fn handle_session_channel(channel: Channel, rpc_client: Arc<rpc::Client>) -> Result<()> {
     let (process_exit_send, process_exit_recv) = tokio::sync::mpsc::channel(1);
 
     let mut state = SessionState {
-        user,
         pty: None,
         channel,
         process_exit_send,
         process_exit_recv,
         envs: Vec::new(),
+
+        rpc_client,
+
         writer: None,
         reader: None,
         reader_ext: None,
@@ -227,7 +245,7 @@ async fn handle_session_channel(user: String, channel: Channel) -> Result<()> {
                     // TODO: also handle exit-signal
                     state.channel
                         .send(ChannelOperationKind::Request(ChannelRequest::ExitStatus {
-                            status: exit.code().unwrap_or(0) as u32,
+                            status: exit.unwrap_or(1) as u32,
                         }))
                     .await?;
                     state.channel.send(ChannelOperationKind::Close).await?;
@@ -393,46 +411,36 @@ impl SessionState {
     }
 
     async fn shell(&mut self, shell_command: Option<&str>) -> Result<()> {
-        let user = self.user.clone();
-        let user = tokio::task::spawn_blocking(move || users::get_user_by_name(&user))
-            .await?
-            .ok_or_eyre("failed to find user")?;
+        let pty = match &self.pty {
+            Some(pty) => Some(pty.user_fd()?),
+            None => None,
+        };
 
-        let shell = user.shell();
+        let mut fds = self
+            .rpc_client
+            .exec(
+                shell_command.map(ToOwned::to_owned),
+                pty,
+                self.pty.as_ref().map(|pty| pty.term()).unwrap_or_default(),
+                self.envs.clone(),
+            )
+            .await?;
 
-        let mut cmd = Command::new(shell);
-        if let Some(shell_command) = shell_command {
-            cmd.arg("-c");
-            cmd.arg(shell_command);
-        }
-        cmd.env_clear();
-
-        if let Some(pty) = &self.pty {
-            pty.start_session_for_command(&mut cmd)?;
+        if self.pty.is_some() {
+            ensure!(
+                fds.len() == 0,
+                "RPC Server sent back FDs despite being in PTY mode"
+            );
         } else {
-            cmd.stdin(Stdio::piped());
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
-        }
+            ensure!(
+                fds.len() == 3,
+                "RPC Server sent back the wrong amount of FDs: {}",
+                fds.len()
+            );
 
-        // TODO: **user** home directory
-        cmd.current_dir(user.home_dir());
-        cmd.env("USER", user.name());
-        cmd.uid(user.uid());
-        cmd.gid(user.primary_group_id());
-
-        for (k, v) in &self.envs {
-            cmd.env(k, v);
-        }
-
-        debug!(cmd = %shell.display(), uid = %user.uid(), gid = %user.primary_group_id(), "Executing process");
-
-        let mut shell = cmd.spawn()?;
-
-        if self.pty.is_none() {
-            let stdin = shell.stdin.take().unwrap();
-            let stdout = shell.stdout.take().unwrap();
-            let stderr = shell.stderr.take().unwrap();
+            let stdin = File::from_std(std::fs::File::from(fds.remove(0)));
+            let stdout = File::from_std(std::fs::File::from(fds.remove(0)));
+            let stderr = File::from_std(std::fs::File::from(fds.remove(0)));
 
             self.writer = Some(Box::pin(stdin));
             self.reader = Some(Box::pin(stdout));
@@ -440,8 +448,9 @@ impl SessionState {
         }
 
         let process_exit_send = self.process_exit_send.clone();
+        let client = self.rpc_client.clone();
         tokio::spawn(async move {
-            let result = shell.wait().await;
+            let result = client.wait().await;
             let _ = process_exit_send.send(result).await;
         });
         debug!("Successfully spawned shell");

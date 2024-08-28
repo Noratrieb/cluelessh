@@ -9,10 +9,13 @@ use cluelessh_keys::{
 use cluelessh_protocol::auth::{CheckPubkey, VerifySignature};
 use eyre::eyre;
 use tracing::debug;
-use users::os::unix::UserExt;
+use users::{os::unix::UserExt, User};
 
 /// A known-authorized public key for a user.
-pub struct UserPublicKey(PublicKeyWithComment);
+pub struct UserPublicKey {
+    key: PublicKeyWithComment,
+    user: User,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -46,27 +49,29 @@ impl UserPublicKey {
         let authorized_keys = AuthorizedKeys::parse(&file)?;
 
         if let Some(key) = authorized_keys.contains(provided_key) {
-            Ok(Self(key.clone()))
+            Ok(Self {
+                key: key.clone(),
+                user,
+            })
         } else {
             Err(AuthError::UnauthorizedPublicKey)
         }
     }
 
     pub fn verify_signature(&self, data: &[u8], signature: &[u8]) -> bool {
-        self.0.key.verify_signature(data, signature)
+        self.key.key.verify_signature(data, signature)
     }
 }
 
-pub async fn verify_signature(auth: VerifySignature) -> eyre::Result<bool> {
+pub async fn verify_signature(auth: VerifySignature) -> eyre::Result<Option<User>> {
     let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
-        return Ok(false);
+        return Ok(None);
     };
     if auth.pubkey_alg_name != public_key.algorithm_name() {
-        return Ok(false);
+        return Ok(None);
     }
 
-    let result: std::result::Result<UserPublicKey, AuthError> =
-        UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
+    let result = UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
 
     debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey signature");
 
@@ -81,16 +86,16 @@ pub async fn verify_signature(auth: VerifySignature) -> eyre::Result<bool> {
             );
 
             if user_key.verify_signature(&sign_data, &auth.signature) {
-                Ok(true)
+                Ok(Some(user_key.user))
             } else {
-                Ok(false)
+                Ok(None)
             }
         }
         Err(
             AuthError::UnknownUser
             | AuthError::UnauthorizedPublicKey
             | AuthError::NoAuthorizedKeys(_),
-        ) => Ok(false),
+        ) => Ok(None),
         Err(AuthError::InvalidAuthorizedKeys(err)) => Err(eyre!(err)),
     }
 }
