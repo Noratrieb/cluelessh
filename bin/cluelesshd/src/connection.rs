@@ -98,7 +98,7 @@ async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
             let rpc_client = rpc_client2.clone();
             Box::pin(async move {
                 rpc_client
-                    .check_pubkey(
+                    .check_public_key(
                         msg.user,
                         msg.session_identifier,
                         msg.pubkey_alg_name,
@@ -475,20 +475,14 @@ impl SessionState {
         height_px: u32,
         term_modes: Vec<u8>,
     ) -> Result<()> {
-        let mut fd = self
+        let controller = self
             .rpc_client
             .pty_req(width_chars, height_rows, width_px, height_px, term_modes)
             .await?;
 
-        ensure!(
-            fd.len() == 1,
-            "Incorrect amount of FDs received: {}",
-            fd.len()
-        );
 
         self.pty_term = Some(term);
 
-        let controller = fd.remove(0);
         self.writer = Some(Box::pin(File::from_std(std::fs::File::from(
             controller.try_clone()?,
         ))));
