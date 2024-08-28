@@ -10,6 +10,8 @@ use crate::Result;
 use crate::{peer_error, Msg, SshRng, SshStatus};
 use cluelessh_format::numbers;
 use cluelessh_format::{NameList, Reader, Writer};
+use cluelessh_keys::public::PublicKey;
+use cluelessh_keys::signature::Signature;
 use tracing::{debug, info, trace};
 
 // This is definitely who we are.
@@ -28,7 +30,7 @@ pub struct ServerConnection {
 
 #[derive(Debug, Clone, Default)]
 pub struct ServerConfig {
-    pub host_keys: Vec<cluelessh_keys::private::PlaintextPrivateKey>,
+    pub host_keys: Vec<cluelessh_keys::public::PublicKey>,
 }
 
 enum ServerState {
@@ -47,9 +49,21 @@ enum ServerState {
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },
+    WaitingForSignature {
+        /// h
+        hash: [u8; 32],
+        pub_hostkey: PublicKey,
+        /// k
+        shared_secret: Vec<u8>,
+        server_ephemeral_public_key: Vec<u8>,
+        encryption_client_to_server: EncryptionAlgorithm,
+        encryption_server_to_client: EncryptionAlgorithm,
+    },
     NewKeys {
-        h: [u8; 32],
-        k: Vec<u8>,
+        /// h
+        hash: [u8; 32],
+        /// k
+        shared_secret: Vec<u8>,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },
@@ -242,11 +256,11 @@ impl ServerConnection {
                 } => {
                     let dh = KeyExchangeEcDhInitPacket::parse(&packet.payload)?;
 
-                    let client_public_key = dh.qc;
+                    let client_ephemeral_public_key = dh.qc;
 
                     let server_secret = (kex_algorithm.generate_secret)(&mut *self.rng);
-                    let server_public_key = server_secret.pubkey;
-                    let shared_secret = (server_secret.exchange)(client_public_key)?;
+                    let server_ephemeral_public_key = server_secret.pubkey;
+                    let shared_secret = (server_secret.exchange)(client_ephemeral_public_key)?;
                     let pub_hostkey = server_host_key_algorithm.public_key();
 
                     let hash = crypto::key_exchange_hash(
@@ -255,35 +269,31 @@ impl ServerConnection {
                         client_kexinit,
                         server_kexinit,
                         &pub_hostkey.to_wire_encoding(),
-                        client_public_key,
-                        &server_public_key,
+                        client_ephemeral_public_key,
+                        &server_ephemeral_public_key,
                         &shared_secret,
                     );
 
-                    let signature = server_host_key_algorithm.sign(&hash);
+                    // eprintln!("client_ephemeral_public_key: {:x?}", client_ephemeral_public_key);
+                    // eprintln!("server_ephemeral_public_key: {:x?}", server_ephemeral_public_key);
+                    // eprintln!("shared_secret:               {:x?}", shared_secret);
+                    // eprintln!("hash:                        {:x?}", hash);
 
-                    // eprintln!("client_public_key: {:x?}", client_public_key);
-                    // eprintln!("server_public_key: {:x?}", server_public_key);
-                    // eprintln!("shared_secret:     {:x?}", shared_secret);
-                    // eprintln!("hash:              {:x?}", hash);
-
-                    let packet = Packet::new_msg_kex_ecdh_reply(
-                        &pub_hostkey.to_wire_encoding(),
-                        &server_public_key,
-                        &signature.to_wire_encoding(),
-                    );
-
-                    self.packet_transport.queue_packet(packet);
-                    self.state = ServerState::NewKeys {
-                        h: hash,
-                        k: shared_secret,
+                    self.state = ServerState::WaitingForSignature {
+                        hash,
+                        pub_hostkey,
+                        shared_secret,
+                        server_ephemeral_public_key,
                         encryption_client_to_server: *encryption_client_to_server,
                         encryption_server_to_client: *encryption_server_to_client,
                     };
                 }
+                ServerState::WaitingForSignature { .. } => {
+                    return Err(peer_error!("unexpected packet"));
+                }
                 ServerState::NewKeys {
-                    h,
-                    k,
+                    hash: h,
+                    shared_secret: k,
                     encryption_client_to_server,
                     encryption_server_to_client,
                 } => {
@@ -341,6 +351,43 @@ impl ServerConnection {
         match self.state {
             ServerState::Open { session_ident } => Some(session_ident),
             _ => None,
+        }
+    }
+
+    pub fn is_waiting_on_signature(&self) -> Option<(&PublicKey, [u8; 32])> {
+        match &self.state {
+            ServerState::WaitingForSignature {
+                pub_hostkey, hash, ..
+            } => Some((pub_hostkey, *hash)),
+            _ => None,
+        }
+    }
+
+    pub fn do_signature(&mut self, signature: Signature) {
+        match &self.state {
+            ServerState::WaitingForSignature {
+                hash,
+                pub_hostkey,
+                shared_secret,
+                server_ephemeral_public_key,
+                encryption_client_to_server,
+                encryption_server_to_client,
+            } => {
+                let packet = Packet::new_msg_kex_ecdh_reply(
+                    &pub_hostkey.to_wire_encoding(),
+                    &server_ephemeral_public_key,
+                    &signature.to_wire_encoding(),
+                );
+
+                self.packet_transport.queue_packet(packet);
+                self.state = ServerState::NewKeys {
+                    hash: *hash,
+                    shared_secret: shared_secret.clone(),
+                    encryption_client_to_server: *encryption_client_to_server,
+                    encryption_server_to_client: *encryption_server_to_client,
+                };
+            }
+            _ => unreachable!("doing signature while not waiting for it"),
         }
     }
 

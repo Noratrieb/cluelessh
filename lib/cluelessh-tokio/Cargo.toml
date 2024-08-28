@@ -8,6 +8,7 @@ eyre.workspace = true
 cluelessh-transport = { path = "../cluelessh-transport" }
 cluelessh-connection = { path = "../cluelessh-connection" }
 cluelessh-protocol = { path = "../cluelessh-protocol" }
+cluelessh-keys = { path = "../cluelessh-keys" }
 tokio = { version = "1.39.3", features = ["net"] }
 tracing.workspace = true
 futures = "0.3.30"

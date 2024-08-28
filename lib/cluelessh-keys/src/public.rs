@@ -134,6 +134,45 @@ fn b64encode(bytes: &[u8]) -> String {
     base64::prelude::BASE64_STANDARD.encode(bytes)
 }
 
+impl serde::Serialize for PublicKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.to_wire_encoding())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PublicKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct Visitor;
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = PublicKey;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(formatter, "bytes encoded as an SSH public key")
+            }
+
+            fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                PublicKey::from_wire_encoding(bytes).map_err(|err| {
+                    serde::de::Error::custom(format_args!(
+                        "invalid value: {}: {err}",
+                        de::Unexpected::Bytes(bytes),
+                    ))
+                })
+            }
+        }
+        deserializer.deserialize_bytes(Visitor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine;

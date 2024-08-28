@@ -4,6 +4,8 @@ use std::mem;
 
 use auth::AuthOption;
 use cluelessh_connection::ChannelOperation;
+use cluelessh_keys::public::PublicKey;
+use cluelessh_keys::signature::Signature;
 use tracing::debug;
 
 // Re-exports
@@ -74,6 +76,14 @@ impl ServerConnection {
         }
 
         Ok(())
+    }
+
+    pub fn is_waiting_on_signature(&self) -> Option<(&PublicKey, [u8; 32])> {
+        self.transport.is_waiting_on_signature()
+    }
+
+    pub fn do_signature(&mut self, signature: Signature) {
+        self.transport.do_signature(signature);
     }
 
     pub fn next_msg_to_send(&mut self) -> Option<cluelessh_transport::Msg> {

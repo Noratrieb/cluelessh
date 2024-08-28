@@ -3,8 +3,8 @@ mod readline;
 use std::{net::SocketAddr, sync::Arc};
 
 use cluelessh_keys::private::EncryptedPrivateKeys;
-use cluelessh_tokio::{server::ServerAuthVerify, Channel};
-use eyre::{Context, Result};
+use cluelessh_tokio::{server::ServerAuth, Channel};
+use eyre::{Context, OptionExt, Result};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -40,7 +40,25 @@ async fn main() -> eyre::Result<()> {
 
     let listener = TcpListener::bind(addr).await.wrap_err("binding listener")?;
 
-    let auth_verify = ServerAuthVerify {
+    let host_keys = vec![
+        EncryptedPrivateKeys::parse(ED25519_PRIVKEY.as_bytes())
+            .unwrap()
+            .decrypt(None)
+            .unwrap()
+            .remove(0),
+        EncryptedPrivateKeys::parse(ECDSA_PRIVKEY.as_bytes())
+            .unwrap()
+            .decrypt(None)
+            .unwrap()
+            .remove(0),
+    ];
+
+    let pub_host_keys = host_keys
+        .iter()
+        .map(|key| key.private_key.public_key())
+        .collect::<Vec<_>>();
+
+    let auth_verify = ServerAuth {
         verify_password: Some(Arc::new(|auth| {
             Box::pin(async move {
                 info!(password = %auth.password, "Got password");
@@ -59,21 +77,21 @@ async fn main() -> eyre::Result<()> {
             !! DO NOT ENTER PASSWORDS YOU DON'T WANT STOLEN !!\r\n"
                 .to_owned(),
         ),
+        sign_with_hostkey: Arc::new(move |msg| {
+            let host_keys = host_keys.clone();
+            Box::pin(async move {
+                let private = host_keys
+                    .iter()
+                    .find(|privkey| privkey.private_key.public_key() == msg.public_key)
+                    .ok_or_eyre("missing private key")?;
+
+                Ok(private.private_key.sign(&msg.hash))
+            })
+        }),
     };
 
     let transport_config = cluelessh_protocol::transport::server::ServerConfig {
-        host_keys: vec![
-            EncryptedPrivateKeys::parse(ED25519_PRIVKEY.as_bytes())
-                .unwrap()
-                .decrypt(None)
-                .unwrap()
-                .remove(0),
-            EncryptedPrivateKeys::parse(ECDSA_PRIVKEY.as_bytes())
-                .unwrap()
-                .decrypt(None)
-                .unwrap()
-                .remove(0),
-        ],
+        host_keys: pub_host_keys,
     };
 
     let mut listener =
@@ -187,9 +205,11 @@ async fn handle_session_channel(
                             }
 
                             let result = execute_command(&command);
-                            channel
-                                .send(ChannelOperationKind::Data(result.stdout))
-                                .await?;
+                            if !result.stdout.is_empty() {
+                                channel
+                                    .send(ChannelOperationKind::Data(result.stdout))
+                                    .await?;
+                            }
                             channel
                                 .send(ChannelOperationKind::Request(ChannelRequest::ExitStatus {
                                     status: result.status,
@@ -221,6 +241,7 @@ async fn handle_session_channel(
                         readline.recv_bytes(&data);
                         let to_write = readline.bytes_to_write();
                         if !to_write.is_empty() {
+                            // TODO: introduce helper to Channel that allows writing 0 data
                             channel.send(ChannelOperationKind::Data(to_write)).await?;
                         }
 

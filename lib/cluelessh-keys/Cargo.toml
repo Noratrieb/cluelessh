@@ -15,6 +15,7 @@ base64 = "0.22.1"
 cluelessh-format = { version = "0.1.0", path = "../cluelessh-format" }
 tracing.workspace = true
 p256 = "0.13.2"
+serde = "1.0.209"
 
 [lints]
 workspace = true

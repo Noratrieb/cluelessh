@@ -7,6 +7,7 @@ edition = "2021"
 rand = "0.8.5"
 cluelessh-connection = { path = "../cluelessh-connection" }
 cluelessh-transport = { path = "../cluelessh-transport" }
+cluelessh-keys = { path = "../cluelessh-keys" }
 tracing.workspace = true
 cluelessh-format = { version = "0.1.0", path = "../cluelessh-format" }
 

@@ -1,4 +1,5 @@
 use cluelessh_connection::{ChannelKind, ChannelNumber, ChannelOperation};
+use cluelessh_keys::{public::PublicKey, signature::Signature};
 use futures::future::BoxFuture;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -23,7 +24,7 @@ use crate::{Channel, ChannelState, PendingChannel};
 
 pub struct ServerListener {
     listener: TcpListener,
-    auth_verify: ServerAuthVerify,
+    auth_verify: ServerAuth,
     transport_config: cluelessh_transport::server::ServerConfig, // TODO ratelimits etc
 }
 
@@ -45,27 +46,35 @@ pub struct ServerConnection<S> {
     /// New channels opened by the peer.
     new_channels: VecDeque<Channel>,
 
-    auth_verify: ServerAuthVerify,
+    signature_in_progress: bool,
+    auth_verify: ServerAuth,
 }
 
 enum Operation {
     VerifyPassword(String, Result<bool>),
     CheckPubkey(Result<bool>, String, Vec<u8>),
     VerifySignature(String, Result<bool>),
+    SignatureReceived(Result<Signature>),
 }
 
 pub type AuthFn<A, R> = Arc<dyn Fn(A) -> BoxFuture<'static, R> + Send + Sync>;
 
 #[derive(Clone)]
-pub struct ServerAuthVerify {
+pub struct ServerAuth {
     pub verify_password: Option<AuthFn<VerifyPassword, Result<bool>>>,
     pub verify_signature: Option<AuthFn<VerifySignature, Result<bool>>>,
     pub check_pubkey: Option<AuthFn<CheckPubkey, Result<bool>>>,
+    pub sign_with_hostkey: AuthFn<SignWithHostKey, Result<Signature>>,
     pub auth_banner: Option<String>,
 }
 fn _assert_send_sync() {
     fn send<T: Send + Sync>() {}
-    send::<ServerAuthVerify>();
+    send::<ServerAuth>();
+}
+
+pub struct SignWithHostKey {
+    pub hash: [u8; 32],
+    pub public_key: PublicKey,
 }
 
 pub enum Error {
@@ -81,7 +90,7 @@ impl From<eyre::Report> for Error {
 impl ServerListener {
     pub fn new(
         listener: TcpListener,
-        auth_verify: ServerAuthVerify,
+        auth_verify: ServerAuth,
         transport_config: cluelessh_transport::server::ServerConfig,
     ) -> Self {
         Self {
@@ -107,7 +116,7 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
     pub fn new(
         stream: S,
         peer_addr: SocketAddr,
-        auth_verify: ServerAuthVerify,
+        auth_verify: ServerAuth,
         transport_config: cluelessh_transport::server::ServerConfig,
     ) -> Self {
         let (operations_send, operations_recv) = tokio::sync::mpsc::channel(15);
@@ -149,6 +158,7 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
             ),
             new_channels: VecDeque::new(),
             auth_verify,
+            signature_in_progress: false,
         }
     }
 
@@ -159,6 +169,20 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
     /// Executes one loop iteration of the main loop.
     // IMPORTANT: no operations on this struct should ever block the main loop, except this one.
     pub async fn progress(&mut self) -> Result<(), Error> {
+        if let Some((public_key, hash)) = self.proto.is_waiting_on_signature() {
+            if !self.signature_in_progress {
+                self.signature_in_progress = true;
+
+                let send = self.operations_send.clone();
+                let public_key = public_key.clone();
+                let sign_with_hostkey = self.auth_verify.sign_with_hostkey.clone();
+                tokio::spawn(async move {
+                    let result = sign_with_hostkey(SignWithHostKey { public_key, hash }).await;
+                    let _ = send.send(Operation::SignatureReceived(result)).await;
+                });
+            }
+        }
+
         if let Some(auth) = self.proto.auth() {
             for req in auth.server_requests() {
                 match req {
@@ -329,6 +353,10 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
                     Some(Operation::VerifyPassword(user, result)) => if let Some(auth) = self.proto.auth() {
                         auth.verification_result(result?, user);
                     },
+                    Some(Operation::SignatureReceived(signature)) => {
+                        let signature = signature?;
+                        self.proto.do_signature(signature);
+                    }
                     None => {}
                 }
                 self.send_off_data().await?;

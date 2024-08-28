@@ -1,10 +1,6 @@
 pub mod encrypt;
 
-use cluelessh_keys::{
-    private::{PlaintextPrivateKey, PrivateKey},
-    public::PublicKey,
-    signature::Signature,
-};
+use cluelessh_keys::{public::PublicKey, signature::Signature};
 use p256::ecdsa::signature::Verifier;
 use sha2::Digest;
 
@@ -110,26 +106,21 @@ impl AlgorithmName for EncryptionAlgorithm {
 pub struct EncodedSshSignature(pub Vec<u8>);
 
 pub struct HostKeySigningAlgorithm {
-    private_key: Box<PrivateKey>,
+    public_key: PublicKey,
 }
 
 impl AlgorithmName for HostKeySigningAlgorithm {
     fn name(&self) -> &'static str {
-        self.private_key.algorithm_name()
+        self.public_key.algorithm_name()
     }
 }
 
 impl HostKeySigningAlgorithm {
-    pub fn new(private_key: PrivateKey) -> Self {
-        Self {
-            private_key: Box::new(private_key),
-        }
-    }
-    pub fn sign(&self, data: &[u8]) -> Signature {
-        self.private_key.sign(data)
+    pub fn new(public_key: PublicKey) -> Self {
+        Self { public_key }
     }
     pub fn public_key(&self) -> PublicKey {
-        self.private_key.public_key()
+        self.public_key.clone()
     }
 }
 
@@ -253,10 +244,10 @@ pub struct SupportedAlgorithms {
 
 impl SupportedAlgorithms {
     /// A secure default using elliptic curves and AEAD.
-    pub fn secure(host_keys: &[PlaintextPrivateKey]) -> Self {
+    pub fn secure(host_keys: &[PublicKey]) -> Self {
         let supported_host_keys = host_keys
             .iter()
-            .map(|key| HostKeySigningAlgorithm::new(key.private_key.clone()))
+            .map(|key| HostKeySigningAlgorithm::new(key.clone()))
             .collect();
 
         Self {
