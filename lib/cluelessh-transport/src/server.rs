@@ -121,7 +121,7 @@ impl ServerConnection {
 
                     let reason_string = numbers::disconnect_reason_to_string(reason);
 
-                    info!(%reason, %reason_string, %description, "Client disconnecting");
+                    debug!(%reason, %reason_string, %description, "Client disconnecting");
 
                     return Err(SshStatus::Disconnect);
                 }

@@ -1,6 +1,6 @@
 //! PTY-related operations for setting up the session.
 
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::OwnedFd;
 
 use eyre::{Context, Result};
 use rustix::{
@@ -11,19 +11,16 @@ use rustix::{
 use tokio::process::Command;
 
 pub struct Pty {
-    term: String,
-
-    controller: OwnedFd,
-
-    user_pty: OwnedFd,
+    pub controller: OwnedFd,
+    pub user_pty: OwnedFd,
 }
 
 impl Pty {
-    pub async fn new(term: String, winsize: Winsize, modes: Vec<u8>) -> Result<Self> {
-        tokio::task::spawn_blocking(move || Self::new_blocking(term, winsize, modes)).await?
+    pub async fn new(winsize: Winsize, modes: Vec<u8>) -> Result<Self> {
+        tokio::task::spawn_blocking(move || Self::new_blocking(winsize, modes)).await?
     }
 
-    pub fn new_blocking(term: String, winsize: Winsize, modes: Vec<u8>) -> Result<Self> {
+    pub fn new_blocking(winsize: Winsize, modes: Vec<u8>) -> Result<Self> {
         // Create new PTY:
         let controller = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)
             .wrap_err("opening controller pty")?;
@@ -47,22 +44,9 @@ impl Pty {
         rustix::termios::tcsetattr(&user_pty, rustix::termios::OptionalActions::Flush, &termios)?;
 
         Ok(Self {
-            term,
             controller,
             user_pty,
         })
-    }
-
-    pub fn term(&self) -> String {
-        self.term.clone()
-    }
-
-    pub fn user_fd(&self) -> Result<OwnedFd> {
-        self.user_pty.try_clone().wrap_err("cloning PTY user")
-    }
-
-    pub fn controller(&self) -> BorrowedFd<'_> {
-        self.controller.as_fd()
     }
 }
 

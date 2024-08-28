@@ -280,7 +280,7 @@ pub mod auth {
 
     use cluelessh_format::{numbers, NameList};
     use cluelessh_transport::{packet::Packet, peer_error, Result};
-    use tracing::{debug, info};
+    use tracing::debug;
 
     pub struct ServerAuth {
         has_failed: bool,
@@ -363,7 +363,7 @@ pub mod auth {
             let method_name = p.utf8_string()?;
 
             if method_name != "none" {
-                info!(
+                debug!(
                     %username,
                     %service_name,
                     %method_name,

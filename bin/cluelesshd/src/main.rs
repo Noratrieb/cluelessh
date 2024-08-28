@@ -24,7 +24,7 @@ use eyre::{bail, eyre, Context, Result};
 use rustix::fs::MemfdFlags;
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use tracing_subscriber::EnvFilter;
 
@@ -39,7 +39,12 @@ struct Args {
 async fn main() -> eyre::Result<()> {
     match std::env::var("CLUELESSH_PRIVSEP_PROCESS") {
         Ok(privsep_process) => match privsep_process.as_str() {
-            "connection" => connection::connection().await,
+            "connection" => {
+                if let Err(err) = connection::connection().await {
+                    error!(?err, "Error in connection child process");
+                }
+                Ok(())
+            }
             _ => bail!("unknown CLUELESSH_PRIVSEP_PROCESS: {privsep_process}"),
         },
         Err(_) => {
@@ -49,6 +54,10 @@ async fn main() -> eyre::Result<()> {
             let config = config::Config::find(&args)?;
 
             setup_tracing(&config);
+
+            if !rustix::process::getuid().is_root() {
+                warn!("Daemon not started as root. This disables several security mitigations and permits logging in as any other user");
+            }
 
             let addr: SocketAddr = SocketAddr::new(config.net.ip, config.net.port);
             info!(%addr, "Starting server");
@@ -220,15 +229,15 @@ async fn spawn_connection_child(
 
             // Ensure that all FDs are closed except stdout (for logging), and the 3 arguments.
             drop(rustix::stdio::take_stdin());
-            drop(rustix::stdio::take_stderr());
-
-            let result = libc::close_range(
+            // libc close_range is not async-signal-safe, so syscall directly.
+            let result = libc::syscall(
+                libc::SYS_close_range,
                 (PRIVSEP_CONNECTION_RPC_CLIENT_FD as u32) + 1,
                 std::ffi::c_uint::MAX,
                 0,
             );
-            if result == -1 {
-                return Err(std::io::Error::last_os_error());
+            if result.is_negative() {
+                return Err(std::io::Error::from_raw_os_error(-(result as i32)));
             }
 
             // Ensure our new FDs stay open, as they will be acquired in the new process.

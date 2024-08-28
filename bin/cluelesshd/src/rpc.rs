@@ -15,6 +15,7 @@ use cluelessh_keys::signature::Signature;
 use cluelessh_protocol::auth::CheckPubkey;
 use cluelessh_protocol::auth::VerifySignature;
 use eyre::bail;
+use eyre::ensure;
 use eyre::eyre;
 use eyre::Context;
 use eyre::OptionExt;
@@ -25,6 +26,7 @@ use rustix::net::RecvFlags;
 use rustix::net::SendAncillaryBuffer;
 use rustix::net::SendAncillaryMessage;
 use rustix::net::SendFlags;
+use rustix::termios::Winsize;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::process::Child;
@@ -55,6 +57,7 @@ enum Request {
         pubkey_alg_name: String,
         pubkey: Vec<u8>,
     },
+    PtyReq(PtyRequest),
     /// Executes a command on the host.
     /// IMPORTANT: This is the critical operation, and we must ensure that it is secure.
     /// To ensure that even a compromised auth process cannot escalate privileges via this RPC,
@@ -64,12 +67,18 @@ enum Request {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct PtyRequest {
+    height_rows: u32,
+    width_chars: u32,
+    width_px: u32,
+    height_px: u32,
+    term_modes: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct ShellRequest {
-    /// Whether a PTY is used.
-    /// If true, the PTY fd is passed as ancillary data.
-    /// If false, the response will contain the 3 stdio fds
-    /// as ancillary data.
-    pty: Option<ShellRequestPty>,
+    /// Whether a PTY is used and if yes, the TERM env var.
+    pty_term: Option<String>,
     command: Option<String>,
     env: Vec<(String, String)>,
 }
@@ -100,6 +109,11 @@ struct ShellResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct PtyResponse {
+    result: Result<(), String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct WaitResponse {
     result: Result<Option<i32>, String>,
 }
@@ -114,9 +128,9 @@ pub struct Server {
     server_recv_recv: mpsc::Receiver<(Request, Vec<OwnedFd>)>,
     host_keys: Vec<PlaintextPrivateKey>,
     authenticated_user: Option<users::User>,
-    /// We keep the owned FDs here around to avoid a race condition where the child would
-    /// think stdout is closed before the client process opens it.
-    shell_process: Option<(Child, Vec<OwnedFd>)>,
+
+    pty_user: Option<OwnedFd>,
+    shell_process: Option<Child>,
 }
 
 fn server_thread(
@@ -152,6 +166,7 @@ impl Server {
             host_keys,
             server_recv_recv,
             authenticated_user: None,
+            pty_user: None,
             shell_process: None,
         })
     }
@@ -171,7 +186,7 @@ impl Server {
         }
     }
 
-    async fn receive_message(&mut self, req: Request, mut fds: Vec<OwnedFd>) -> Result<()> {
+    async fn receive_message(&mut self, req: Request, fds: Vec<OwnedFd>) -> Result<()> {
         trace!(?req, ?fds, "Received RPC message");
 
         match req {
@@ -245,6 +260,42 @@ impl Server {
 
                 self.respond(CheckPubkeyResponse { is_ok }).await?;
             }
+            Request::PtyReq(req) => {
+                if self.pty_user.is_some() {
+                    self.respond(ShellResponse {
+                        result: Err("already requests pty".to_owned()),
+                    })
+                    .await?;
+
+                    return Ok(());
+                }
+
+                let result = crate::pty::Pty::new(
+                    Winsize {
+                        ws_row: req.width_chars as u16,
+                        ws_col: req.height_rows as u16,
+                        ws_xpixel: req.width_px as u16,
+                        ws_ypixel: req.height_px as u16,
+                    },
+                    req.term_modes,
+                )
+                .await;
+
+                let (controller, user) = match result {
+                    Ok(pty) => (vec![pty.controller], Ok(pty.user_pty)),
+                    Err(err) => (vec![], Err(err)),
+                };
+
+                self.respond_ancillary(
+                    ShellResponse {
+                        result: user.as_ref().map(drop).map_err(ToString::to_string),
+                    },
+                    controller,
+                )
+                .await?;
+
+                self.pty_user = user.ok();
+            }
             Request::Shell(req) => {
                 if self.shell_process.is_some() {
                     self.respond(ShellResponse {
@@ -264,10 +315,7 @@ impl Server {
                     return Ok(());
                 };
 
-                let result = self
-                    .shell(&mut fds, &user, req)
-                    .await
-                    .map_err(|err| err.to_string());
+                let result = self.shell(&user, req).await.map_err(|err| err.to_string());
 
                 self.respond_ancillary(
                     ShellResponse {
@@ -285,7 +333,7 @@ impl Server {
                     .await?;
                 }
                 Some(child) => {
-                    let result = child.0.wait().await;
+                    let result = child.wait().await;
 
                     self.respond(WaitResponse {
                         result: result
@@ -302,12 +350,7 @@ impl Server {
         Ok(())
     }
 
-    async fn shell(
-        &mut self,
-        fds: &mut Vec<OwnedFd>,
-        user: &User,
-        req: ShellRequest,
-    ) -> Result<Vec<OwnedFd>> {
+    async fn shell(&mut self, user: &User, req: ShellRequest) -> Result<Vec<OwnedFd>> {
         let shell = user.shell();
 
         let mut cmd = Command::new(shell);
@@ -317,14 +360,20 @@ impl Server {
         }
         cmd.env_clear();
 
-        let has_pty = req.pty.is_some();
+        let has_pty = req.pty_term.is_some();
 
-        if let Some(pty) = req.pty {
-            if fds.len() != 1 {
-                bail!("invalid request: shell with PTY must send one FD");
-            }
-            let user_pty = fds.remove(0);
-            crate::pty::start_session_for_command(user_pty, pty.term, &mut cmd)?;
+        ensure!(
+            has_pty == self.pty_user.is_some(),
+            "Mismatch between client and server PTY requests"
+        );
+
+        if let Some(term) = req.pty_term {
+            let Some(pty_fd) = &self.pty_user else {
+                bail!("no pty requested before");
+            };
+            let pty_fd = pty_fd.try_clone()?;
+
+            crate::pty::start_session_for_command(pty_fd, term, &mut cmd)?;
         } else {
             cmd.stdin(Stdio::piped());
             cmd.stdout(Stdio::piped());
@@ -346,22 +395,18 @@ impl Server {
 
         // See Server::shell_process
         let mut fds1 = Vec::new();
-        let mut fds2 = Vec::new();
 
         if !has_pty {
             let stdin = shell.stdin.take().unwrap().into_owned_fd()?;
             let stdout = shell.stdout.take().unwrap().into_owned_fd()?;
             let stderr = shell.stderr.take().unwrap().into_owned_fd()?;
 
-            fds1.push(stdin.try_clone()?);
-            fds2.push(stdin);
-            fds1.push(stdout.try_clone()?);
-            fds2.push(stdout);
-            fds1.push(stderr.try_clone()?);
-            fds2.push(stderr);
+            fds1.push(stdin);
+            fds1.push(stdout);
+            fds1.push(stderr);
         }
 
-        self.shell_process = Some((shell, vec![]));
+        self.shell_process = Some(shell);
 
         Ok(fds1)
     }
@@ -442,26 +487,45 @@ impl Client {
         resp.is_ok.map_err(|err| eyre!(err))
     }
 
-    pub async fn exec(
+    pub async fn pty_req(
+        &self,
+        width_chars: u32,
+        height_rows: u32,
+        width_px: u32,
+        height_px: u32,
+        term_modes: Vec<u8>,
+    ) -> Result<Vec<OwnedFd>> {
+        self.send_request(
+            &Request::PtyReq(PtyRequest {
+                height_rows,
+                width_chars,
+                width_px,
+                height_px,
+                term_modes,
+            }),
+            vec![],
+        )
+        .await?;
+
+        let (resp, fds) = self.recv_response_ancillary::<PtyResponse>().await?;
+        resp.result.map_err(|err| eyre!(err))?;
+
+        Ok(fds)
+    }
+
+    pub async fn shell(
         &self,
         command: Option<String>,
-        pty: Option<OwnedFd>,
-        term: String,
+        pty_term: Option<String>,
         env: Vec<(String, String)>,
     ) -> Result<Vec<OwnedFd>> {
-        let has_pty = pty.is_some();
-        let fds = match pty {
-            Some(fd) => vec![fd],
-            None => vec![],
-        };
-
         self.send_request(
             &Request::Shell(ShellRequest {
-                pty: has_pty.then_some(ShellRequestPty { term }),
+                pty_term,
                 command,
                 env,
             }),
-            fds,
+            vec![],
         )
         .await?;
 
@@ -487,6 +551,7 @@ impl Client {
     }
 
     async fn send_request(&self, req: &Request, fds: Vec<OwnedFd>) -> Result<()> {
+        // TODO: remove support for ancillary?
         let data = postcard::to_allocvec(&req)?;
 
         let socket = self.socket.as_fd().try_clone_to_owned()?;

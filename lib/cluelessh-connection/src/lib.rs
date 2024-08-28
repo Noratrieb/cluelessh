@@ -456,7 +456,7 @@ impl ChannelsState {
                             return Err(peer_error!("server tried to open shell"));
                         }
 
-                        info!(channel = %our_channel, "Opening shell");
+                        debug!(channel = %our_channel, "Opening shell");
                         ChannelRequest::Shell { want_reply }
                     }
                     "exec" => {

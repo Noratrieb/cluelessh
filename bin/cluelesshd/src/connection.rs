@@ -1,11 +1,11 @@
 use std::{
-    os::fd::{BorrowedFd, FromRawFd, OwnedFd},
+    os::fd::{FromRawFd, OwnedFd},
+    path::Path,
     pin::Pin,
     sync::Arc,
 };
 
 use crate::{
-    pty::{self, Pty},
     rpc, MemFd, SerializedConnectionState, PRIVSEP_CONNECTION_RPC_CLIENT_FD,
     PRIVSEP_CONNECTION_STATE_FD, PRIVSEP_CONNECTION_STREAM_FD,
 };
@@ -18,7 +18,11 @@ use cluelessh_tokio::{
     Channel,
 };
 use eyre::{bail, ensure, Result, WrapErr};
-use rustix::termios::Winsize;
+use rustix::{
+    fs::UnmountFlags,
+    process::WaitOptions,
+    thread::{Pid, UnshareFlags},
+};
 use tokio::{
     fs::File,
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -28,8 +32,6 @@ use tokio::{
 use tracing::{debug, error, info, info_span, warn, Instrument};
 
 pub async fn connection() -> Result<()> {
-    rustix::fs::fcntl_getfd(unsafe { BorrowedFd::borrow_raw(PRIVSEP_CONNECTION_STATE_FD) })
-        .unwrap();
     let mut memfd =
         unsafe { MemFd::<SerializedConnectionState>::from_raw_fd(PRIVSEP_CONNECTION_STATE_FD) }
             .wrap_err("failed to open memfd")?;
@@ -44,6 +46,10 @@ pub async fn connection() -> Result<()> {
 
 async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
     let config = state.config;
+
+    if rustix::process::getuid().is_root() {
+        unshare_namespaces()?;
+    }
 
     if let Some(uid) = state.setgid {
         debug!(?uid, "Setting GID to drop privileges");
@@ -124,6 +130,69 @@ async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
     Ok(())
 }
 
+fn unshare_namespaces() -> Result<()> {
+    // The complicated incarnation to get a mount namespace working.
+    rustix::thread::unshare(
+        UnshareFlags::NEWNS
+            | UnshareFlags::NEWNET
+            | UnshareFlags::NEWIPC
+            | UnshareFlags::NEWPID
+            | UnshareFlags::NEWTIME,
+    )
+    .wrap_err("unsharing namespaces")?;
+
+    // After creating the PID namespace, we fork immediately so we can get PID 1.
+    // We never exec, we just let the child live on happily.
+    // The parent immediately waits for it, and then doesn't do anything really.
+    // TODO: this is a bit sus....
+    unsafe {
+        let result = libc::fork();
+        if result == -1 {
+            return Err(std::io::Error::last_os_error()).wrap_err("setting propagation flags")?;
+        }
+        if result > 0 {
+            // Parent
+            let code = rustix::process::waitpid(
+                Some(Pid::from_raw_unchecked(result)),
+                WaitOptions::empty(),
+            );
+            match code {
+                Err(_) => libc::exit(2),
+                Ok(None) => libc::exit(1),
+                Ok(Some(code)) => libc::exit(code.as_raw() as i32),
+            }
+        }
+    }
+
+    let result = unsafe {
+        libc::mount(
+            c"none".as_ptr(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        )
+    };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error()).wrap_err("setting propagation flags")?;
+    }
+
+    let new_root = Path::new("empty-new-root");
+    let old_root = &new_root.join("old-root");
+
+    std::fs::create_dir_all(new_root)?;
+    std::fs::create_dir_all(&old_root)?;
+
+    rustix::fs::bind_mount(new_root, new_root).wrap_err("bind mount the empty dir")?;
+
+    rustix::process::pivot_root(new_root, old_root).wrap_err("pivoting root")?;
+
+    // TODO: can we get rid of it entirely?
+    rustix::fs::unmount("/old-root", UnmountFlags::DETACH).wrap_err("unmounting old root")?;
+
+    Ok(())
+}
+
 async fn handle_connection(
     mut conn: cluelessh_tokio::server::ServerConnection<TcpStream>,
     rpc_client: Arc<rpc::Client>,
@@ -145,7 +214,7 @@ async fn handle_connection(
                         return Ok(());
                     }
                     SshStatus::Disconnect => {
-                        info!("Received disconnect from client");
+                        debug!("Received disconnect from client");
                         return Ok(());
                     }
                 },
@@ -175,7 +244,7 @@ async fn handle_connection(
 }
 
 struct SessionState {
-    pty: Option<Pty>,
+    pty_term: Option<String>,
     channel: Channel,
     process_exit_send: mpsc::Sender<Result<Option<i32>>>,
     process_exit_recv: mpsc::Receiver<Result<Option<i32>>>,
@@ -196,7 +265,7 @@ async fn handle_session_channel(channel: Channel, rpc_client: Arc<rpc::Client>) 
     let (process_exit_send, process_exit_recv) = tokio::sync::mpsc::channel(1);
 
     let mut state = SessionState {
-        pty: None,
+        pty_term: None,
         channel,
         process_exit_send,
         process_exit_recv,
@@ -295,12 +364,10 @@ impl SessionState {
                         match self
                             .pty_req(
                                 term,
-                                Winsize {
-                                    ws_row: height_rows as u16,
-                                    ws_col: width_chars as u16,
-                                    ws_xpixel: width_px as u16,
-                                    ws_ypixel: height_px as u16,
-                                },
+                                height_rows,
+                                width_chars,
+                                width_px,
+                                height_px,
                                 term_modes,
                             )
                             .await
@@ -398,11 +465,30 @@ impl SessionState {
         Ok(())
     }
 
-    async fn pty_req(&mut self, term: String, winsize: Winsize, term_modes: Vec<u8>) -> Result<()> {
-        let pty = pty::Pty::new(term, winsize, term_modes).await?;
-        let controller = pty.controller().try_clone_to_owned()?;
+    async fn pty_req(
+        &mut self,
+        term: String,
 
-        self.pty = Some(pty);
+        width_chars: u32,
+        height_rows: u32,
+        width_px: u32,
+        height_px: u32,
+        term_modes: Vec<u8>,
+    ) -> Result<()> {
+        let mut fd = self
+            .rpc_client
+            .pty_req(width_chars, height_rows, width_px, height_px, term_modes)
+            .await?;
+
+        ensure!(
+            fd.len() == 1,
+            "Incorrect amount of FDs received: {}",
+            fd.len()
+        );
+
+        self.pty_term = Some(term);
+
+        let controller = fd.remove(0);
         self.writer = Some(Box::pin(File::from_std(std::fs::File::from(
             controller.try_clone()?,
         ))));
@@ -411,22 +497,16 @@ impl SessionState {
     }
 
     async fn shell(&mut self, shell_command: Option<&str>) -> Result<()> {
-        let pty = match &self.pty {
-            Some(pty) => Some(pty.user_fd()?),
-            None => None,
-        };
-
         let mut fds = self
             .rpc_client
-            .exec(
+            .shell(
                 shell_command.map(ToOwned::to_owned),
-                pty,
-                self.pty.as_ref().map(|pty| pty.term()).unwrap_or_default(),
+                self.pty_term.clone(),
                 self.envs.clone(),
             )
             .await?;
 
-        if self.pty.is_some() {
+        if self.pty_term.is_some() {
             ensure!(
                 fds.len() == 0,
                 "RPC Server sent back FDs despite being in PTY mode"
