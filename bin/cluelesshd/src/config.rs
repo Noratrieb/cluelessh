@@ -80,7 +80,6 @@ fn default_false() -> bool {
     false
 }
 
-
 fn addr_default() -> IpAddr {
     IpAddr::V4(Ipv4Addr::UNSPECIFIED)
 }

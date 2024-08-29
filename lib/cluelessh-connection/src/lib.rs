@@ -153,8 +153,8 @@ impl ChannelsState {
     }
 
     pub fn recv_packet(&mut self, packet: Packet) -> Result<()> {
-        // TODO: window
-
+        // TODO: what if we mostly ignored window and just always increased it again?
+        // there's an excention to ignore it entirely that we could also support...
         let mut p = packet.payload_parser();
         let packet_type = p.u8()?;
         match packet_type {

@@ -74,7 +74,7 @@ pub async fn verify_signature(auth: VerifySignature) -> eyre::Result<Option<User
             // Verify signature...
 
             let sign_data = cluelessh_keys::signature::signature_data(
-                auth.session_identifier,
+                auth.session_id.0,
                 &auth.user,
                 &auth.public_key,
             );

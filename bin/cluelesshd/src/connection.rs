@@ -52,7 +52,10 @@ async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
     let stream = TcpStream::from_std(stream)?;
 
     let host_keys = state.pub_host_keys;
-    let transport_config = cluelessh_transport::server::ServerConfig { host_keys };
+    let transport_config = cluelessh_transport::server::ServerConfig {
+        host_keys,
+        server_identification: b"SSH-2.0-ClueleSSH_0.1\r\n".to_vec(),
+    };
 
     let rpc_client = unsafe { OwnedFd::from_raw_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD) };
     let rpc_client1 = Arc::new(rpc::Client::from_fd(rpc_client)?);
@@ -66,25 +69,13 @@ async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
             let rpc_client = rpc_client1.clone();
             Box::pin(async move {
                 rpc_client
-                    .verify_signature(
-                        msg.user,
-                        msg.session_identifier,
-                        msg.public_key,
-                        msg.signature,
-                    )
+                    .verify_signature(msg.user, msg.session_id, msg.public_key, msg.signature)
                     .await
             })
         })),
         check_pubkey: Some(Arc::new(move |msg| {
             let rpc_client = rpc_client2.clone();
-            Box::pin(async move {
-                rpc_client
-                    .check_public_key(
-                        msg.user,
-                        msg.public_key,
-                    )
-                    .await
-            })
+            Box::pin(async move { rpc_client.check_public_key(msg.user, msg.public_key).await })
         })),
         auth_banner: config.auth.banner,
         do_key_exchange: Arc::new(move |msg| {

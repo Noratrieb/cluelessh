@@ -7,7 +7,7 @@ use sha2::Digest;
 
 use crate::{
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
-    peer_error, Msg, Result, SshRng,
+    peer_error, Msg, Result, SessionId, SshRng,
 };
 
 pub type SharedSecret = secrecy::Secret<SharedSecretInner>;
@@ -308,7 +308,7 @@ impl SupportedAlgorithms {
 }
 
 pub(crate) struct Session {
-    session_id: [u8; 32],
+    session_id: SessionId,
     from_peer: Tunnel,
     to_peer: Tunnel,
 }
@@ -326,6 +326,7 @@ pub(crate) trait Keys: Send + Sync + 'static {
     fn encrypt_packet_to_msg(&mut self, packet: Packet, packet_number: u64) -> Msg;
 
     fn additional_mac_len(&self) -> usize;
+    // TODO: actually rekey...
     fn rekey(
         &mut self,
         h: [u8; 32],
@@ -362,7 +363,7 @@ impl Keys for Plaintext {
 
 impl Session {
     pub(crate) fn new(
-        h: [u8; 32],
+        h: SessionId,
         k: &SharedSecret,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
@@ -370,7 +371,7 @@ impl Session {
     ) -> Self {
         Self::from_keys(
             h,
-            h,
+            h.0,
             k,
             encryption_client_to_server,
             encryption_server_to_client,
@@ -380,7 +381,7 @@ impl Session {
 
     /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
     fn from_keys(
-        session_id: [u8; 32],
+        session_id: SessionId,
         h: [u8; 32],
         k: &SharedSecret,
         alg_c2s: EncryptionAlgorithm,
@@ -462,7 +463,7 @@ fn derive_key(
     k: &SharedSecret,
     h: [u8; 32],
     letter: &str,
-    session_id: [u8; 32],
+    session_id: SessionId,
     key_size: usize,
 ) -> Vec<u8> {
     let sha2len = sha2::Sha256::output_size();
@@ -476,7 +477,7 @@ fn derive_key(
 
         if i == 0 {
             hash.update(letter.as_bytes());
-            hash.update(session_id);
+            hash.update(session_id.0);
         } else {
             hash.update(&output[..(i * sha2len)]);
         }

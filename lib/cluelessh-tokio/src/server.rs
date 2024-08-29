@@ -213,10 +213,7 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
                         tokio::spawn(async move {
                             let result = check(check_pubkey.clone()).await;
                             let _ = send
-                                .send(Operation::CheckPubkey(
-                                    result,
-                                    check_pubkey.public_key,
-                                ))
+                                .send(Operation::CheckPubkey(result, check_pubkey.public_key))
                                 .await;
                         });
                     }

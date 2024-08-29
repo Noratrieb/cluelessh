@@ -1,4 +1,5 @@
 use cluelessh_connection::{ChannelKind, ChannelNumber, ChannelOperation};
+use cluelessh_transport::SessionId;
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -31,7 +32,7 @@ pub struct ClientAuth {
     pub username: String,
     pub prompt_password: Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + Send + Sync>,
     pub sign_pubkey:
-        Arc<dyn Fn([u8; 32]) -> BoxFuture<'static, Result<SignatureResult>> + Send + Sync>,
+        Arc<dyn Fn(SessionId) -> BoxFuture<'static, Result<SignatureResult>> + Send + Sync>,
 }
 
 enum Operation {
@@ -59,9 +60,7 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
             channel_ops_recv,
             channels: HashMap::new(),
             proto: cluelessh_protocol::ClientConnection::new(
-                cluelessh_transport::client::ClientConnection::new(
-                    cluelessh_protocol::OsRng,
-                ),
+                cluelessh_transport::client::ClientConnection::new(cluelessh_protocol::OsRng),
                 cluelessh_protocol::auth::ClientAuth::new(auth.username.as_bytes().to_vec()),
             ),
             auth,
@@ -88,13 +87,11 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
                             let _ = send.send(Operation::PasswordEntered(password)).await;
                         });
                     }
-                    cluelessh_protocol::auth::ClientUserRequest::PrivateKeySign {
-                        session_identifier,
-                    } => {
+                    cluelessh_protocol::auth::ClientUserRequest::PrivateKeySign { session_id } => {
                         let send = self.operations_send.clone();
                         let sign_pubkey = self.auth.sign_pubkey.clone();
                         tokio::spawn(async move {
-                            let signature_result = sign_pubkey(session_identifier).await;
+                            let signature_result = sign_pubkey(session_id).await;
                             let _ = send.send(Operation::Signature(signature_result)).await;
                         });
                     }

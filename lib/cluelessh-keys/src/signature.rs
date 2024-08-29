@@ -2,7 +2,6 @@ use cluelessh_format::{ParseError, Reader, Writer};
 
 use crate::{private::PrivateKey, public::PublicKey};
 
-// TODO SessionId newtype
 pub fn signature_data(session_id: [u8; 32], username: &str, pubkey: &PublicKey) -> Vec<u8> {
     let mut s = Writer::new();
 

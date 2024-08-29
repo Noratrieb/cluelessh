@@ -102,6 +102,8 @@ async fn main() -> eyre::Result<()> {
 
     let transport_config = cluelessh_protocol::transport::server::ServerConfig {
         host_keys: pub_host_keys,
+        // This is definitely who we are.
+        server_identification: b"SSH-2.0-OpenSSH_9.7\r\n".to_vec(),
     };
 
     let mut listener =

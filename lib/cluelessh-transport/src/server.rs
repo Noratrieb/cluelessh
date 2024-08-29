@@ -7,17 +7,13 @@ use crate::crypto::{
 use crate::packet::{
     KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, ProtocolIdentParser,
 };
-use crate::Result;
 use crate::{peer_error, Msg, SshRng, SshStatus};
+use crate::{Result, SessionId};
 use cluelessh_format::numbers;
 use cluelessh_format::{NameList, Reader, Writer};
 use cluelessh_keys::private::PlaintextPrivateKey;
 use cluelessh_keys::signature::Signature;
 use tracing::{debug, info, trace};
-
-// This is definitely who we are.
-// TODO: dont make cluelesshd do this
-pub const SERVER_IDENTIFICATION: &[u8] = b"SSH-2.0-OpenSSH_9.7\r\n";
 
 pub struct ServerConnection {
     state: ServerState,
@@ -31,6 +27,7 @@ pub struct ServerConnection {
 
 #[derive(Debug, Clone, Default)]
 pub struct ServerConfig {
+    pub server_identification: Vec<u8>,
     pub host_keys: Vec<cluelessh_keys::public::PublicKey>,
 }
 
@@ -69,10 +66,10 @@ enum ServerState {
         encryption_server_to_client: EncryptionAlgorithm,
     },
     ServiceRequest {
-        session_ident: [u8; 32],
+        session_id: SessionId,
     },
     Open {
-        session_ident: [u8; 32],
+        session_id: SessionId,
     },
 }
 
@@ -87,7 +84,7 @@ pub struct KeyExchangeParameters {
 }
 
 pub struct KeyExchangeResponse {
-    pub hash: [u8; 32],
+    pub hash: SessionId,
     pub server_ephemeral_public_key: Vec<u8>,
     pub shared_secret: SharedSecret,
     pub signature: Signature,
@@ -111,7 +108,7 @@ impl ServerConnection {
             ident_parser.recv_bytes(bytes);
             if let Some(client_identification) = ident_parser.get_peer_ident() {
                 self.packet_transport
-                    .queue_send_protocol_info(SERVER_IDENTIFICATION.to_vec());
+                    .queue_send_protocol_info(self.config.server_identification.clone());
                 self.state = ServerState::KeyExchangeInit {
                     client_identification,
                 };
@@ -311,10 +308,11 @@ impl ServerConnection {
                         *encryption_server_to_client,
                         true,
                     );
-                    self.state = ServerState::ServiceRequest { session_ident: *h };
+                    self.state = ServerState::ServiceRequest {
+                        session_id: SessionId(*h),
+                    };
                 }
-                ServerState::ServiceRequest { session_ident } => {
-                    // TODO: this should probably move out of here? unsure.
+                ServerState::ServiceRequest { session_id } => {
                     if packet.payload.first() != Some(&numbers::SSH_MSG_SERVICE_REQUEST) {
                         return Err(peer_error!("did not send SSH_MSG_SERVICE_REQUEST"));
                     }
@@ -335,7 +333,7 @@ impl ServerConnection {
                         },
                     });
                     self.state = ServerState::Open {
-                        session_ident: *session_ident,
+                        session_id: *session_id,
                     };
                 }
                 ServerState::Open { .. } => {
@@ -346,9 +344,9 @@ impl ServerConnection {
         Ok(())
     }
 
-    pub fn is_open(&self) -> Option<[u8; 32]> {
+    pub fn is_open(&self) -> Option<SessionId> {
         match self.state {
-            ServerState::Open { session_ident } => Some(session_ident),
+            ServerState::Open { session_id } => Some(session_id),
             _ => None,
         }
     }
@@ -365,7 +363,7 @@ impl ServerConnection {
                 ..
             } => Some(KeyExchangeParameters {
                 client_ident: client_identification.clone(),
-                server_ident: SERVER_IDENTIFICATION.to_vec(),
+                server_ident: self.config.server_identification.to_vec(),
                 client_kexinit: client_kexinit.clone(),
                 server_kexinit: server_kexinit.clone(),
                 eph_client_public_key: client_ephemeral_public_key.clone(),
@@ -392,7 +390,7 @@ impl ServerConnection {
 
                 self.packet_transport.queue_packet(packet);
                 self.state = ServerState::NewKeys {
-                    hash: response.hash,
+                    hash: response.hash.0,
                     shared_secret: response.shared_secret.clone(),
                     encryption_client_to_server: *encryption_client_to_server,
                     encryption_server_to_client: *encryption_server_to_client,
@@ -437,7 +435,7 @@ pub fn do_key_exchange(
     );
 
     Ok(KeyExchangeResponse {
-        hash,
+        hash: SessionId(hash),
         server_ephemeral_public_key,
         shared_secret,
         signature: private.private_key.sign(&hash),

@@ -4,10 +4,11 @@ use tracing::{debug, info, trace};
 
 use crate::{
     crypto::{
-        self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeyVerifyAlgorithm, KeyExchangeSecret, SharedSecret, SupportedAlgorithms
+        self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeyVerifyAlgorithm,
+        KeyExchangeSecret, SharedSecret, SupportedAlgorithms,
     },
     packet::{Packet, PacketTransport, ProtocolIdentParser},
-    peer_error, Msg, Result, SshRng, SshStatus,
+    peer_error, Msg, Result, SessionId, SshRng, SshStatus,
 };
 use cluelessh_format::{numbers, NameList, Reader, Writer};
 
@@ -50,10 +51,10 @@ enum ClientState {
         encryption_server_to_client: EncryptionAlgorithm,
     },
     ServiceRequest {
-        session_identifier: [u8; 32],
+        session_id: SessionId,
     },
     Open {
-        session_identifier: [u8; 32],
+        session_id: SessionId,
     },
 }
 
@@ -310,10 +311,10 @@ impl ClientConnection {
                         .queue_packet(Packet::new_msg_service_request(b"ssh-userauth"));
 
                     self.state = ClientState::ServiceRequest {
-                        session_identifier: *h,
+                        session_id: SessionId(*h),
                     };
                 }
-                ClientState::ServiceRequest { session_identifier } => {
+                ClientState::ServiceRequest { session_id } => {
                     let mut accept = packet.payload_parser();
                     let packet_type = accept.u8()?;
                     if packet_type != numbers::SSH_MSG_SERVICE_ACCEPT {
@@ -326,7 +327,7 @@ impl ClientConnection {
 
                     debug!("Connection has been opened successfully");
                     self.state = ClientState::Open {
-                        session_identifier: *session_identifier,
+                        session_id: *session_id,
                     };
                 }
                 ClientState::Open { .. } => {
@@ -349,9 +350,9 @@ impl ClientConnection {
         self.packet_transport.queue_packet(packet);
     }
 
-    pub fn is_open(&self) -> Option<[u8; 32]> {
+    pub fn is_open(&self) -> Option<SessionId> {
         match self.state {
-            ClientState::Open { session_identifier } => Some(session_identifier),
+            ClientState::Open { session_id } => Some(session_id),
             _ => None,
         }
     }

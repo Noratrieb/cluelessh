@@ -14,6 +14,7 @@ use cluelessh_keys::public::PublicKey;
 use cluelessh_keys::signature::Signature;
 use cluelessh_protocol::auth::VerifySignature;
 use cluelessh_transport::crypto::AlgorithmName;
+use cluelessh_transport::SessionId;
 use eyre::bail;
 use eyre::ensure;
 use eyre::eyre;
@@ -56,7 +57,7 @@ enum Request {
     /// If it is okay, store the user so we can later spawn a process as them.
     VerifySignature {
         user: String,
-        session_identifier: [u8; 32],
+        session_id: SessionId,
         public_key: PublicKey,
         signature: Signature,
     },
@@ -115,7 +116,7 @@ impl secrecy::DebugSecret for SerializableSharedSecret {}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KeyExchangeResponse {
-    pub hash: [u8; 32],
+    pub hash: SessionId,
     pub server_ephemeral_public_key: Vec<u8>,
     pub shared_secret: secrecy::Secret<SerializableSharedSecret>,
     pub signature: Signature,
@@ -259,7 +260,7 @@ impl Server {
             }
             Request::VerifySignature {
                 user,
-                session_identifier,
+                session_id,
                 public_key,
                 signature,
             } => {
@@ -269,7 +270,7 @@ impl Server {
                 }
                 let is_ok = crate::auth::verify_signature(VerifySignature {
                     user,
-                    session_identifier,
+                    session_id,
                     public_key,
                     signature,
                 })
@@ -487,13 +488,13 @@ impl Client {
     pub async fn verify_signature(
         &self,
         user: String,
-        session_identifier: [u8; 32],
+        session_id: SessionId,
         public_key: PublicKey,
         signature: Signature,
     ) -> Result<bool> {
         self.request_response::<VerifySignatureResponse>(&Request::VerifySignature {
             user,
-            session_identifier,
+            session_id,
             public_key,
             signature,
         })

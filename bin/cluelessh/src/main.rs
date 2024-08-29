@@ -69,7 +69,7 @@ async fn main() -> eyre::Result<()> {
                     result.wrap_err("failed to prompt password")
                 })
             }),
-            sign_pubkey: Arc::new(move |session_identifier| {
+            sign_pubkey: Arc::new(move |session_id| {
                 let mut attempted_public_keys = HashSet::new();
                 let username = username.clone();
                 Box::pin(async move {
@@ -93,11 +93,8 @@ async fn main() -> eyre::Result<()> {
                     }
                     let pubkey = PublicKey::from_wire_encoding(&identity.key_blob)?;
 
-                    let sign_data = cluelessh_keys::signature::signature_data(
-                        session_identifier,
-                        &username,
-                        &pubkey,
-                    );
+                    let sign_data =
+                        cluelessh_keys::signature::signature_data(session_id.0, &username, &pubkey);
                     let signature = agent
                         .sign(&identity.key_blob, &sign_data, 0)
                         .await

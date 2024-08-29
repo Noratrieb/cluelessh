@@ -47,11 +47,11 @@ impl ServerConnection {
         self.transport.recv_bytes(bytes)?;
 
         if let ServerConnectionState::Setup(options, auth_banner) = &mut self.state {
-            if let Some(session_ident) = self.transport.is_open() {
+            if let Some(session_id) = self.transport.is_open() {
                 self.state = ServerConnectionState::Auth(auth::ServerAuth::new(
                     mem::take(options),
                     auth_banner.take(),
-                    session_ident,
+                    session_id,
                 ));
             }
         }
@@ -177,9 +177,9 @@ impl ClientConnection {
         self.transport.recv_bytes(bytes)?;
 
         if let ClientConnectionState::Setup(auth) = &mut self.state {
-            if let Some(session_ident) = self.transport.is_open() {
+            if let Some(session_id) = self.transport.is_open() {
                 let mut auth = mem::take(auth).unwrap();
-                auth.set_session_identifier(session_ident);
+                auth.set_session_id(session_id);
 
                 debug!("Connection has been opened");
                 self.state = ClientConnectionState::Auth(auth);
@@ -278,7 +278,7 @@ pub mod auth {
 
     use cluelessh_format::{numbers, NameList};
     use cluelessh_keys::{public::PublicKey, signature::Signature};
-    use cluelessh_transport::{packet::Packet, peer_error, Result};
+    use cluelessh_transport::{packet::Packet, peer_error, Result, SessionId};
     use tracing::debug;
 
     pub struct ServerAuth {
@@ -288,7 +288,7 @@ pub mod auth {
         options: HashSet<AuthOption>,
         banner: Option<String>,
         server_requests: VecDeque<ServerRequest>,
-        session_ident: [u8; 32],
+        session_id: SessionId,
     }
 
     pub enum ServerRequest {
@@ -314,7 +314,7 @@ pub mod auth {
     #[derive(Debug, Clone)]
     pub struct VerifySignature {
         pub user: String,
-        pub session_identifier: [u8; 32],
+        pub session_id: SessionId,
         pub public_key: PublicKey,
         /// The signature. Guaranteed to match the algorithm of `public_key`.
         pub signature: Signature,
@@ -330,14 +330,14 @@ pub mod auth {
         pub fn new(
             options: HashSet<AuthOption>,
             banner: Option<String>,
-            session_ident: [u8; 32],
+            session_id: SessionId,
         ) -> Self {
             Self {
                 has_failed: false,
                 packets_to_send: VecDeque::new(),
                 options,
                 is_authenticated: None,
-                session_ident,
+                session_id,
                 banner,
                 server_requests: VecDeque::new(),
             }
@@ -426,7 +426,7 @@ pub mod auth {
                         self.server_requests
                             .push_back(ServerRequest::VerifySignature(VerifySignature {
                                 user: username.to_owned(),
-                                session_identifier: self.session_ident,
+                                session_id: self.session_id,
                                 public_key,
                                 signature,
                             }));
@@ -512,12 +512,12 @@ pub mod auth {
         packets_to_send: VecDeque<Packet>,
         user_requests: VecDeque<ClientUserRequest>,
         is_authenticated: bool,
-        session_identifier: Option<[u8; 32]>,
+        session_id: Option<SessionId>,
     }
 
     pub enum ClientUserRequest {
         Password,
-        PrivateKeySign { session_identifier: [u8; 32] },
+        PrivateKeySign { session_id: SessionId },
         Banner(Vec<u8>),
     }
 
@@ -533,13 +533,13 @@ pub mod auth {
                 username,
                 user_requests: VecDeque::new(),
                 is_authenticated: false,
-                session_identifier: None,
+                session_id: None,
             }
         }
 
-        pub fn set_session_identifier(&mut self, ident: [u8; 32]) {
-            assert!(self.session_identifier.is_none());
-            self.session_identifier = Some(ident);
+        pub fn set_session_id(&mut self, session_id: SessionId) {
+            assert!(self.session_id.is_none());
+            self.session_id = Some(session_id);
         }
 
         pub fn is_authenticated(&self) -> bool {
@@ -605,9 +605,9 @@ pub mod auth {
                         // TODO: Ask the server whether there are any keys we can use instead of just yoloing the signature.
                         self.user_requests
                             .push_back(ClientUserRequest::PrivateKeySign {
-                                session_identifier: self
-                                    .session_identifier
-                                    .expect("set_session_identifier has not been called"),
+                                session_id: self
+                                    .session_id
+                                    .expect("set_session_id has not been called"),
                             });
                     } else {
                         return Err(peer_error!(

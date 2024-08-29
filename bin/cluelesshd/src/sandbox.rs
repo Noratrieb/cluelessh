@@ -14,7 +14,9 @@ use rustix::{
 use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch};
 use tracing::{debug, trace, warn};
 
-use crate::{SerializedConnectionState, PRIVSEP_CONNECTION_RPC_CLIENT_FD, PRIVSEP_CONNECTION_STREAM_FD};
+use crate::{
+    SerializedConnectionState, PRIVSEP_CONNECTION_RPC_CLIENT_FD, PRIVSEP_CONNECTION_STREAM_FD,
+};
 
 #[tracing::instrument(skip(state), ret)]
 pub fn drop_privileges(state: &SerializedConnectionState) -> Result<()> {
@@ -228,12 +230,24 @@ fn seccomp() -> Result<()> {
             (libc::SYS_eventfd2, vec![]),
             (libc::SYS_epoll_wait, vec![]),
             (libc::SYS_epoll_ctl, vec![]),
-            (libc::SYS_fcntl, vec![]), // todo: restrict (72)
+            (libc::SYS_fcntl, vec![]), // todo: restrict this
             (libc::SYS_socketpair, vec![]),
-            (libc::SYS_sendmsg, vec![limit_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD)],),
-            (libc::SYS_recvmsg, vec![limit_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD)]),
-            (libc::SYS_sendto, vec![limit_fd(PRIVSEP_CONNECTION_STREAM_FD)]),
-            (libc::SYS_recvfrom, vec![limit_fd(PRIVSEP_CONNECTION_STREAM_FD)]),
+            (
+                libc::SYS_sendmsg,
+                vec![limit_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD)],
+            ),
+            (
+                libc::SYS_recvmsg,
+                vec![limit_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD)],
+            ),
+            (
+                libc::SYS_sendto,
+                vec![limit_fd(PRIVSEP_CONNECTION_STREAM_FD)],
+            ),
+            (
+                libc::SYS_recvfrom,
+                vec![limit_fd(PRIVSEP_CONNECTION_STREAM_FD)],
+            ),
             (libc::SYS_getrandom, vec![]),
             (libc::SYS_rt_sigaction, vec![]),
             (libc::SYS_rt_sigprocmask, vec![]),

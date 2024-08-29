@@ -6,8 +6,8 @@ use std::mem;
 use tracing::{debug, trace};
 
 use crate::crypto::{self, EncryptionAlgorithm, Keys, Plaintext, Session, SharedSecret};
-use crate::peer_error;
 use crate::Result;
+use crate::{peer_error, SessionId};
 use cluelessh_format::numbers;
 use cluelessh_format::{NameList, Reader, Writer};
 
@@ -67,7 +67,8 @@ impl PacketTransport {
     }
 
     fn recv_bytes_step(&mut self, bytes: &[u8]) -> Result<Option<usize>> {
-        // TODO: This might not work if we buffer two packets where one changes keys in between?
+        // This would not work if we buffer two packets where one changes keys in between,
+        // but SSH_MSG_NEWKEYS messages guarantee that this cannot happen.
 
         let result =
             self.recv_next_packet
@@ -125,7 +126,7 @@ impl PacketTransport {
             is_server,
         ) {
             self.keys = Box::new(Session::new(
-                h,
+                SessionId(h),
                 k,
                 encryption_client_to_server,
                 encryption_server_to_client,

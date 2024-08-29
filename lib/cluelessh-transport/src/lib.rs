@@ -3,8 +3,13 @@ pub mod crypto;
 pub mod packet;
 pub mod server;
 
+use std::fmt::Debug;
+
 use cluelessh_format::ParseError;
 pub use packet::Msg;
+use serde::{Deserialize, Serialize};
+
+// TODO: extensions
 
 #[derive(Debug)]
 pub enum SshStatus {
@@ -15,6 +20,17 @@ pub enum SshStatus {
     /// The connection should be closed and a notice may be logged,
     /// but this does not require operator intervention.
     PeerError(String),
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub struct SessionId(pub [u8; 32]);
+
+impl Debug for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SessionId")
+            .field(&hex::encode(self.0))
+            .finish()
+    }
 }
 
 pub type Result<T, E = SshStatus> = std::result::Result<T, E>;
