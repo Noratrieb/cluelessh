@@ -12,7 +12,7 @@ tokio = { version = "1.39.2", features = ["full"] }
 tracing.workspace = true
 eyre.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
-rustix = { version = "0.38.35", features = ["pty", "termios", "procfs", "process", "stdio", "net", "fs", "thread"] }
+rustix = { version = "0.38.35", features = ["pty", "termios", "procfs", "process", "stdio", "net", "fs", "thread", "pipe"] }
 users = "0.11.0"
 futures = "0.3.30"
 thiserror = "1.0.63"

@@ -3,6 +3,7 @@ mod config;
 mod connection;
 mod pty;
 mod rpc;
+mod sandbox;
 
 use std::{
     io::{Read, Seek, SeekFrom},
@@ -35,12 +36,11 @@ struct Args {
     config: Option<PathBuf>,
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> eyre::Result<()> {
+fn main() -> eyre::Result<()> {
     match std::env::var("CLUELESSH_PRIVSEP_PROCESS") {
         Ok(privsep_process) => match privsep_process.as_str() {
             "connection" => {
-                if let Err(err) = connection::connection().await {
+                if let Err(err) = connection::connection() {
                     error!(?err, "Error in connection child process");
                 }
                 Ok(())
@@ -59,14 +59,10 @@ async fn main() -> eyre::Result<()> {
                 warn!("Daemon not started as root. This disables several security mitigations and permits logging in as any other user");
             }
 
-            let addr: SocketAddr = SocketAddr::new(config.net.ip, config.net.port);
-            info!(%addr, "Starting server");
-
-            let listener = TcpListener::bind(addr)
-                .await
-                .wrap_err_with(|| format!("trying to listen on {addr}"))?;
-
-            main_process(config, listener).await
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(main_process(config))
         }
     }
 }
@@ -121,7 +117,7 @@ struct SerializedConnectionState {
     setgid: Option<u32>,
 }
 
-async fn main_process(config: Config, listener: TcpListener) -> Result<()> {
+async fn main_process(config: Config) -> Result<()> {
     let user = match &config.security.unprivileged_user {
         Some(user) => Some(
             users::get_user_by_name(user).ok_or_else(|| eyre!("unprivileged {user} not found"))?,
@@ -158,6 +154,13 @@ async fn main_process(config: Config, listener: TcpListener) -> Result<()> {
         .iter()
         .map(|key| key.private_key.public_key())
         .collect::<Vec<_>>();
+
+    let addr: SocketAddr = SocketAddr::new(config.net.ip, config.net.port);
+    info!(%addr, "Starting server");
+
+    let listener = TcpListener::bind(addr)
+        .await
+        .wrap_err_with(|| format!("trying to listen on {addr}"))?;
 
     loop {
         let (next_stream, peer_addr) = listener.accept().await?;

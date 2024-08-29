@@ -1,6 +1,5 @@
 use std::{
     os::fd::{FromRawFd, OwnedFd},
-    path::Path,
     pin::Pin,
     sync::Arc,
 };
@@ -18,20 +17,15 @@ use cluelessh_tokio::{
     Channel,
 };
 use eyre::{bail, ensure, Result, WrapErr};
-use rustix::{
-    fs::UnmountFlags,
-    process::WaitOptions,
-    thread::{Pid, UnshareFlags},
-};
 use tokio::{
     fs::File,
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
 };
-use tracing::{debug, error, info, info_span, warn, Instrument};
+use tracing::{debug, error, info, info_span, warn};
 
-pub async fn connection() -> Result<()> {
+pub fn connection() -> Result<()> {
     let mut memfd =
         unsafe { MemFd::<SerializedConnectionState>::from_raw_fd(PRIVSEP_CONNECTION_STATE_FD) }
             .wrap_err("failed to open memfd")?;
@@ -40,31 +34,18 @@ pub async fn connection() -> Result<()> {
     crate::setup_tracing(&state.config);
 
     let span = info_span!("connection", addr = %state.peer_addr);
+    let _guard = span.enter();
 
-    connection_inner(state).instrument(span).await
+    crate::sandbox::drop_privileges(&state)?;
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(connection_inner(state))
 }
 
 async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
     let config = state.config;
-
-    if rustix::process::getuid().is_root() {
-        unshare_namespaces()?;
-    }
-
-    if let Some(uid) = state.setgid {
-        debug!(?uid, "Setting GID to drop privileges");
-        let result = unsafe { libc::setgid(uid) };
-        if result == -1 {
-            return Err(std::io::Error::last_os_error()).wrap_err("failed to setgid");
-        }
-    }
-    if let Some(uid) = state.setuid {
-        debug!(?uid, "Setting UID to drop privileges");
-        let result = unsafe { libc::setuid(uid) };
-        if result == -1 {
-            return Err(std::io::Error::last_os_error()).wrap_err("failed to setuid");
-        }
-    }
 
     let stream = unsafe { std::net::TcpStream::from_raw_fd(PRIVSEP_CONNECTION_STREAM_FD) };
     let stream = TcpStream::from_std(stream)?;
@@ -126,69 +107,6 @@ async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
         error!(?err, "error handling connection");
     }
     info!("Finished connection");
-
-    Ok(())
-}
-
-fn unshare_namespaces() -> Result<()> {
-    // The complicated incarnation to get a mount namespace working.
-    rustix::thread::unshare(
-        UnshareFlags::NEWNS
-            | UnshareFlags::NEWNET
-            | UnshareFlags::NEWIPC
-            | UnshareFlags::NEWPID
-            | UnshareFlags::NEWTIME,
-    )
-    .wrap_err("unsharing namespaces")?;
-
-    // After creating the PID namespace, we fork immediately so we can get PID 1.
-    // We never exec, we just let the child live on happily.
-    // The parent immediately waits for it, and then doesn't do anything really.
-    // TODO: this is a bit sus....
-    unsafe {
-        let result = libc::fork();
-        if result == -1 {
-            return Err(std::io::Error::last_os_error()).wrap_err("setting propagation flags")?;
-        }
-        if result > 0 {
-            // Parent
-            let code = rustix::process::waitpid(
-                Some(Pid::from_raw_unchecked(result)),
-                WaitOptions::empty(),
-            );
-            match code {
-                Err(_) => libc::exit(2),
-                Ok(None) => libc::exit(1),
-                Ok(Some(code)) => libc::exit(code.as_raw() as i32),
-            }
-        }
-    }
-
-    let result = unsafe {
-        libc::mount(
-            c"none".as_ptr(),
-            c"/".as_ptr(),
-            std::ptr::null(),
-            libc::MS_REC | libc::MS_PRIVATE,
-            std::ptr::null(),
-        )
-    };
-    if result == -1 {
-        return Err(std::io::Error::last_os_error()).wrap_err("setting propagation flags")?;
-    }
-
-    let new_root = Path::new("empty-new-root");
-    let old_root = &new_root.join("old-root");
-
-    std::fs::create_dir_all(new_root)?;
-    std::fs::create_dir_all(&old_root)?;
-
-    rustix::fs::bind_mount(new_root, new_root).wrap_err("bind mount the empty dir")?;
-
-    rustix::process::pivot_root(new_root, old_root).wrap_err("pivoting root")?;
-
-    // TODO: can we get rid of it entirely?
-    rustix::fs::unmount("/old-root", UnmountFlags::DETACH).wrap_err("unmounting old root")?;
 
     Ok(())
 }
@@ -479,7 +397,6 @@ impl SessionState {
             .rpc_client
             .pty_req(width_chars, height_rows, width_px, height_px, term_modes)
             .await?;
-
 
         self.pty_term = Some(term);
 
