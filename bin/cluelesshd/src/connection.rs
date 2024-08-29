@@ -1,7 +1,9 @@
 use std::{
+    io,
     os::fd::{FromRawFd, OwnedFd},
     pin::Pin,
     sync::Arc,
+    task::{ready, Poll},
 };
 
 use crate::{
@@ -18,8 +20,7 @@ use cluelessh_tokio::{
 };
 use eyre::{bail, ensure, Result, WrapErr};
 use tokio::{
-    fs::File,
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{unix::AsyncFd, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
 };
@@ -89,9 +90,9 @@ async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
             })
         })),
         auth_banner: config.auth.banner,
-        sign_with_hostkey: Arc::new(move |msg| {
+        do_key_exchange: Arc::new(move |msg| {
             let rpc_client = rpc_client3.clone();
-            Box::pin(async move { rpc_client.sign(msg.hash, msg.public_key).await })
+            Box::pin(async move { rpc_client.kex_exchange(msg).await })
         }),
     };
 
@@ -400,10 +401,8 @@ impl SessionState {
 
         self.pty_term = Some(term);
 
-        self.writer = Some(Box::pin(File::from_std(std::fs::File::from(
-            controller.try_clone()?,
-        ))));
-        self.reader = Some(Box::pin(File::from_std(std::fs::File::from(controller))));
+        self.writer = Some(Box::pin(AsyncFdWrapper::from_fd(controller.try_clone()?)?));
+        self.reader = Some(Box::pin(AsyncFdWrapper::from_fd(controller)?));
         Ok(())
     }
 
@@ -429,9 +428,9 @@ impl SessionState {
                 fds.len()
             );
 
-            let stdin = File::from_std(std::fs::File::from(fds.remove(0)));
-            let stdout = File::from_std(std::fs::File::from(fds.remove(0)));
-            let stderr = File::from_std(std::fs::File::from(fds.remove(0)));
+            let stdin = AsyncFdWrapper::from_fd(fds.remove(0))?;
+            let stdout = AsyncFdWrapper::from_fd(fds.remove(0))?;
+            let stderr = AsyncFdWrapper::from_fd(fds.remove(0))?;
 
             self.writer = Some(Box::pin(stdin));
             self.reader = Some(Box::pin(stdout));
@@ -446,5 +445,75 @@ impl SessionState {
         });
         debug!("Successfully spawned shell");
         Ok(())
+    }
+}
+
+struct AsyncFdWrapper {
+    fd: AsyncFd<OwnedFd>,
+}
+
+impl AsyncFdWrapper {
+    fn from_fd(fd: OwnedFd) -> Result<Self> {
+        rustix::io::ioctl_fionbio(&fd, true).wrap_err("putting fd into nonblocking mode")?;
+        Ok(Self {
+            fd: AsyncFd::new(fd).wrap_err("failed to register async event")?,
+        })
+    }
+}
+
+impl AsyncRead for AsyncFdWrapper {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        loop {
+            let mut guard = ready!(self.fd.poll_read_ready(cx))?;
+
+            let unfilled = buf.initialize_unfilled();
+            match guard.try_io(|inner| {
+                rustix::io::read(inner.get_ref(), unfilled).map_err(io::Error::from)
+            }) {
+                Ok(Ok(len)) => {
+                    buf.advance(len);
+                    return Poll::Ready(Ok(()));
+                }
+                Ok(Err(err)) => return Poll::Ready(Err(err)),
+                Err(_would_block) => continue,
+            }
+        }
+    }
+}
+
+impl AsyncWrite for AsyncFdWrapper {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        loop {
+            let mut guard = ready!(self.fd.poll_write_ready(cx))?;
+
+            match guard
+                .try_io(|inner| rustix::io::write(inner.get_ref(), buf).map_err(io::Error::from))
+            {
+                Ok(result) => return Poll::Ready(result),
+                Err(_would_block) => continue,
+            }
+        }
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
     }
 }

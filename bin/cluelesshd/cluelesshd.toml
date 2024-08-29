@@ -16,3 +16,4 @@ banner = "welcome to my server!!!\r\ni hope you enjoy your stay.\r\n"
 unprivileged_uid = 355353
 unprivileged_gid = 355353
 #unprivileged_user = "sshd"
+experimental_seccomp = true

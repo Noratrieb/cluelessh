@@ -60,7 +60,7 @@ impl<S: AsyncRead + AsyncWrite> ClientConnection<S> {
             channels: HashMap::new(),
             proto: cluelessh_protocol::ClientConnection::new(
                 cluelessh_transport::client::ClientConnection::new(
-                    cluelessh_protocol::ThreadRngRand,
+                    cluelessh_protocol::OsRng,
                 ),
                 cluelessh_protocol::auth::ClientAuth::new(auth.username.as_bytes().to_vec()),
             ),

@@ -14,6 +14,7 @@ use cluelessh_keys::public::PublicKey;
 use cluelessh_keys::signature::Signature;
 use cluelessh_protocol::auth::CheckPubkey;
 use cluelessh_protocol::auth::VerifySignature;
+use cluelessh_transport::crypto::AlgorithmName;
 use eyre::bail;
 use eyre::ensure;
 use eyre::eyre;
@@ -26,6 +27,8 @@ use rustix::net::SendAncillaryBuffer;
 use rustix::net::SendAncillaryMessage;
 use rustix::net::SendFlags;
 use rustix::termios::Winsize;
+use secrecy::ExposeSecret;
+use secrecy::Secret;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::io::Interest;
@@ -36,20 +39,16 @@ use tracing::debug;
 use tracing::trace;
 use users::os::unix::UserExt;
 use users::User;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Request {
-    // TODO: This is a bit... not good, it's not good.
-    // It can be used to sign any arbitrary message, or any arbitary exchange!
-    // I think we need to let the monitor do the DH Key Exchange.
-    // Basically, it should generate the private key for the exchange (and give that to the client)
-    // and then when signing, we compute the shared secret ourselves for the hash.
-    // This should ensure that the connection process cannot sign anything except an SSH kex has
-    // but only with our specific chosen shared secret, which should make it entirely useless for anything else.
-    Sign {
-        hash: [u8; 32],
-        public_key: PublicKey,
-    },
+    /// Performs the key exchange by generating a private key, deriving the shared secret,
+    /// computing the hash and signing it.
+    /// This is combined into one operation to ensure that no signature forgery can happen,
+    /// as the only thing we sign here is a hash, and this hash is guaranteed to contain
+    /// some random bytes from us, making it entirely unpredictable and useless to forge anything.
+    KeyExchange(KeyExchangeRequest),
     CheckPublicKey {
         user: String,
         session_identifier: [u8; 32],
@@ -76,6 +75,56 @@ enum Request {
     Wait,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct KeyExchangeRequest {
+    pub client_ident: Vec<u8>,
+    pub server_ident: Vec<u8>,
+    pub client_kexinit: Vec<u8>,
+    pub server_kexinit: Vec<u8>,
+    pub eph_client_public_key: Vec<u8>,
+    pub server_host_key: PublicKey,
+    pub kex_algorithm: String,
+}
+
+impl Debug for KeyExchangeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyExchangeRequest")
+            .field("client_ident", &"[...]")
+            .field("server_ident", &"[...]")
+            .field("client_kexinit", &"[...]")
+            .field("server_kexinit", &"[...]")
+            .field("eph_client_public_key", &self.eph_client_public_key)
+            .field("server_host_key", &self.server_host_key)
+            .field("kex_algorithm", &self.kex_algorithm)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SerializableSharedSecret(Vec<u8>);
+impl zeroize::Zeroize for SerializableSharedSecret {
+    fn zeroize(&mut self) {
+        self.0.zeroize()
+    }
+}
+impl Debug for SerializableSharedSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SerializableSharedSecret")
+            .finish_non_exhaustive()
+    }
+}
+impl secrecy::CloneableSecret for SerializableSharedSecret {}
+impl secrecy::SerializableSecret for SerializableSharedSecret {}
+impl secrecy::DebugSecret for SerializableSharedSecret {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KeyExchangeResponse {
+    pub hash: [u8; 32],
+    pub server_ephemeral_public_key: Vec<u8>,
+    pub shared_secret: secrecy::Secret<SerializableSharedSecret>,
+    pub signature: Signature,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct PtyRequest {
     height_rows: u32,
@@ -94,12 +143,10 @@ struct ShellRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-
 struct ShellRequestPty {
     term: String,
 }
 
-type SignResponse = Signature;
 type VerifySignatureResponse = bool;
 type CheckPublicKeyResponse = bool;
 type ShellResponse = ();
@@ -142,7 +189,9 @@ impl Server {
 
     pub async fn process(&mut self) -> Result<()> {
         loop {
-            let (recv, fds) = receive_with_fds::<Request>(&self.server).await?;
+            let (recv, fds) = receive_with_fds::<Request>(&self.server)
+                .await
+                .wrap_err("parsing request from client")?;
             ensure!(fds.is_empty(), "Client sent FDs in request");
             self.receive_message(recv).await?;
         }
@@ -152,20 +201,55 @@ impl Server {
         trace!(?req, "Received RPC message");
 
         match req {
-            Request::Sign { hash, public_key } => {
+            Request::KeyExchange(req) => {
                 let Some(private) = self
                     .host_keys
                     .iter()
-                    .find(|privkey| privkey.private_key.public_key() == public_key)
+                    .find(|privkey| privkey.private_key.public_key() == req.server_host_key)
                 else {
                     self.respond_err("missing private key".to_owned()).await?;
-
                     return Ok(());
                 };
 
-                let signature = private.private_key.sign(&hash);
+                let Some(kex_algorithm) =
+                    cluelessh_transport::crypto::kex_algorithm_by_name(&req.kex_algorithm)
+                else {
+                    self.respond_err("invalid kex algorithm".to_owned()).await?;
+                    return Ok(());
+                };
 
-                self.respond::<SignResponse>(Ok(signature)).await?;
+                let req = cluelessh_transport::server::KeyExchangeParameters {
+                    client_ident: req.client_ident,
+                    server_ident: req.server_ident,
+                    client_kexinit: req.client_kexinit,
+                    server_kexinit: req.server_kexinit,
+                    eph_client_public_key: req.eph_client_public_key,
+                    server_host_key_algorithm:
+                        cluelessh_transport::crypto::HostKeySigningAlgorithm::new(
+                            req.server_host_key,
+                        ),
+                    kex_algorithm,
+                };
+
+                let Ok(resp) = cluelessh_transport::server::do_key_exchange(
+                    req,
+                    private,
+                    &mut cluelessh_protocol::OsRng,
+                ) else {
+                    self.respond_err("key exchange failed".to_owned()).await?;
+                    return Ok(());
+                };
+
+                let resp = KeyExchangeResponse {
+                    hash: resp.hash,
+                    server_ephemeral_public_key: resp.server_ephemeral_public_key,
+                    shared_secret: Secret::new(SerializableSharedSecret(
+                        resp.shared_secret.expose_secret().0.to_vec(),
+                    )),
+                    signature: resp.signature,
+                };
+
+                self.respond::<KeyExchangeResponse>(Ok(resp)).await?;
             }
             Request::CheckPublicKey {
                 user,
@@ -367,7 +451,8 @@ impl Server {
         resp: ResponseResult<T>,
         fds: &[BorrowedFd<'_>],
     ) -> Result<()> {
-        send_with_fds(&self.server, &postcard::to_allocvec(&resp)?, fds).await?;
+        let data = Zeroizing::new(postcard::to_allocvec(&resp)?);
+        send_with_fds(&self.server, &data, fds).await?;
 
         Ok(())
     }
@@ -379,9 +464,32 @@ impl Client {
         Ok(Self { socket })
     }
 
-    pub async fn sign(&self, hash: [u8; 32], public_key: PublicKey) -> Result<Signature> {
-        self.request_response::<SignResponse>(&Request::Sign { hash, public_key })
-            .await
+    pub async fn kex_exchange(
+        &self,
+        params: cluelessh_transport::server::KeyExchangeParameters,
+    ) -> Result<cluelessh_transport::server::KeyExchangeResponse> {
+        let resp = self
+            .request_response::<KeyExchangeResponse>(&Request::KeyExchange(KeyExchangeRequest {
+                client_ident: params.client_ident,
+                server_ident: params.server_ident,
+                client_kexinit: params.client_kexinit,
+                server_kexinit: params.server_kexinit,
+                eph_client_public_key: params.eph_client_public_key,
+                server_host_key: params.server_host_key_algorithm.public_key(),
+                kex_algorithm: params.kex_algorithm.name().to_owned(),
+            }))
+            .await?;
+
+        Ok(cluelessh_transport::server::KeyExchangeResponse {
+            hash: resp.hash,
+            server_ephemeral_public_key: resp.server_ephemeral_public_key,
+            shared_secret: cluelessh_transport::crypto::SharedSecret::new(
+                cluelessh_transport::crypto::SharedSecretInner(
+                    resp.shared_secret.expose_secret().0.clone(),
+                ),
+            ),
+            signature: resp.signature,
+        })
     }
 
     pub async fn check_public_key(
@@ -478,6 +586,8 @@ impl Client {
     }
 
     async fn send_request(&self, req: &Request) -> Result<()> {
+        trace!(?req, "Sending RPC request");
+
         let data = postcard::to_allocvec(&req)?;
 
         send_with_fds(&self.socket, &data, &[]).await?;
@@ -489,7 +599,7 @@ impl Client {
     ) -> Result<(R, Vec<OwnedFd>)> {
         let (resp, fds) = receive_with_fds::<ResponseResult<R>>(&self.socket)
             .await
-            .wrap_err("failed to recv")?;
+            .wrap_err("parsing response from server")?;
 
         trace!(?resp, ?fds, "Received RPC response");
 
@@ -499,7 +609,15 @@ impl Client {
     }
 }
 
+const MAX_DATA_SIZE: usize = 4048;
+
 async fn send_with_fds(socket: &UnixDatagram, data: &[u8], fds: &[BorrowedFd<'_>]) -> Result<()> {
+    ensure!(
+        data.len() <= MAX_DATA_SIZE,
+        "Trying to send too much data: {} > {MAX_DATA_SIZE}",
+        data.len()
+    );
+
     socket
         .async_io(Interest::WRITABLE, || {
             let mut space = [0; rustix::cmsg_space!(ScmRights(3))]; //we send up to 3 fds at once
@@ -520,7 +638,7 @@ async fn send_with_fds(socket: &UnixDatagram, data: &[u8], fds: &[BorrowedFd<'_>
 }
 
 async fn receive_with_fds<R: DeserializeOwned>(socket: &UnixDatagram) -> Result<(R, Vec<OwnedFd>)> {
-    let mut data = [0; 1024];
+    let mut data = Zeroizing::new([0; MAX_DATA_SIZE]);
     let mut space = [0; rustix::cmsg_space!(ScmRights(3))]; // maximum size
     let mut cmesg_buf = RecvAncillaryBuffer::new(&mut space);
 
@@ -528,7 +646,7 @@ async fn receive_with_fds<R: DeserializeOwned>(socket: &UnixDatagram) -> Result<
         .async_io(Interest::READABLE, || {
             rustix::net::recvmsg(
                 socket,
-                &mut [IoSliceMut::new(&mut data)],
+                &mut [IoSliceMut::new(&mut *data)],
                 &mut cmesg_buf,
                 RecvFlags::empty(),
             )
@@ -538,7 +656,7 @@ async fn receive_with_fds<R: DeserializeOwned>(socket: &UnixDatagram) -> Result<
 
     let mut fds = Vec::new();
 
-    let data = postcard::from_bytes::<R>(&data[..read.bytes]).wrap_err("invalid request")?;
+    let data_parsed = postcard::from_bytes::<R>(&data[..read.bytes]).wrap_err("invalid request")?;
 
     for msg in cmesg_buf.drain() {
         match msg {
@@ -547,5 +665,5 @@ async fn receive_with_fds<R: DeserializeOwned>(socket: &UnixDatagram) -> Result<
         }
     }
 
-    Ok((data, fds))
+    Ok((data_parsed, fds))
 }

@@ -14,8 +14,3 @@ useless_format = "allow"
 [workspace.dependencies]
 tracing = "0.1.40"
 eyre = "0.6.12"
-
-# Blowfish (bcrypt) is the critical path for private key encryption (KDF),
-# and not optimizing it makes the test suite a lot slower.
-[profile.dev.package.blowfish]
-opt-level = 3

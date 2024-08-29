@@ -1,7 +1,8 @@
 use std::{collections::VecDeque, mem::take};
 
 use crate::crypto::{
-    self, AlgorithmName, EncryptionAlgorithm, HostKeySigningAlgorithm, SupportedAlgorithms,
+    self, AlgorithmName, EncryptionAlgorithm, HostKeySigningAlgorithm, KexAlgorithm, SharedSecret,
+    SupportedAlgorithms,
 };
 use crate::packet::{
     KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, ProtocolIdentParser,
@@ -10,7 +11,7 @@ use crate::Result;
 use crate::{peer_error, Msg, SshRng, SshStatus};
 use cluelessh_format::numbers;
 use cluelessh_format::{NameList, Reader, Writer};
-use cluelessh_keys::public::PublicKey;
+use cluelessh_keys::private::PlaintextPrivateKey;
 use cluelessh_keys::signature::Signature;
 use tracing::{debug, info, trace};
 
@@ -49,21 +50,21 @@ enum ServerState {
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },
-    WaitingForSignature {
-        /// h
-        hash: [u8; 32],
-        pub_hostkey: PublicKey,
-        /// k
-        shared_secret: Vec<u8>,
-        server_ephemeral_public_key: Vec<u8>,
+    WaitingForKeyExchange {
+        client_identification: Vec<u8>,
+        client_kexinit: Vec<u8>,
+        server_kexinit: Vec<u8>,
+        kex_algorithm: crypto::KexAlgorithm,
+        server_host_key_algorithm: HostKeySigningAlgorithm,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
+        client_ephemeral_public_key: Vec<u8>,
     },
     NewKeys {
         /// h
         hash: [u8; 32],
         /// k
-        shared_secret: Vec<u8>,
+        shared_secret: SharedSecret,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },
@@ -73,6 +74,23 @@ enum ServerState {
     Open {
         session_ident: [u8; 32],
     },
+}
+
+pub struct KeyExchangeParameters {
+    pub client_ident: Vec<u8>,
+    pub server_ident: Vec<u8>,
+    pub client_kexinit: Vec<u8>,
+    pub server_kexinit: Vec<u8>,
+    pub eph_client_public_key: Vec<u8>,
+    pub server_host_key_algorithm: HostKeySigningAlgorithm,
+    pub kex_algorithm: KexAlgorithm,
+}
+
+pub struct KeyExchangeResponse {
+    pub hash: [u8; 32],
+    pub server_ephemeral_public_key: Vec<u8>,
+    pub shared_secret: SharedSecret,
+    pub signature: Signature,
 }
 
 impl ServerConnection {
@@ -258,37 +276,18 @@ impl ServerConnection {
 
                     let client_ephemeral_public_key = dh.qc;
 
-                    let server_secret = (kex_algorithm.generate_secret)(&mut *self.rng);
-                    let server_ephemeral_public_key = server_secret.pubkey;
-                    let shared_secret = (server_secret.exchange)(client_ephemeral_public_key)?;
-                    let pub_hostkey = server_host_key_algorithm.public_key();
-
-                    let hash = crypto::key_exchange_hash(
-                        client_identification,
-                        SERVER_IDENTIFICATION,
-                        client_kexinit,
-                        server_kexinit,
-                        &pub_hostkey.to_wire_encoding(),
-                        client_ephemeral_public_key,
-                        &server_ephemeral_public_key,
-                        &shared_secret,
-                    );
-
-                    // eprintln!("client_ephemeral_public_key: {:x?}", client_ephemeral_public_key);
-                    // eprintln!("server_ephemeral_public_key: {:x?}", server_ephemeral_public_key);
-                    // eprintln!("shared_secret:               {:x?}", shared_secret);
-                    // eprintln!("hash:                        {:x?}", hash);
-
-                    self.state = ServerState::WaitingForSignature {
-                        hash,
-                        pub_hostkey,
-                        shared_secret,
-                        server_ephemeral_public_key,
+                    self.state = ServerState::WaitingForKeyExchange {
+                        client_identification: client_identification.clone(),
+                        client_kexinit: client_kexinit.clone(),
+                        server_kexinit: server_kexinit.clone(),
+                        kex_algorithm: *kex_algorithm,
+                        server_host_key_algorithm: server_host_key_algorithm.clone(),
                         encryption_client_to_server: *encryption_client_to_server,
                         encryption_server_to_client: *encryption_server_to_client,
+                        client_ephemeral_public_key: client_ephemeral_public_key.to_vec(),
                     };
                 }
-                ServerState::WaitingForSignature { .. } => {
+                ServerState::WaitingForKeyExchange { .. } => {
                     return Err(peer_error!("unexpected packet"));
                 }
                 ServerState::NewKeys {
@@ -354,35 +353,47 @@ impl ServerConnection {
         }
     }
 
-    pub fn is_waiting_on_signature(&self) -> Option<(&PublicKey, [u8; 32])> {
+    pub fn is_waiting_on_key_exchange(&self) -> Option<KeyExchangeParameters> {
         match &self.state {
-            ServerState::WaitingForSignature {
-                pub_hostkey, hash, ..
-            } => Some((pub_hostkey, *hash)),
+            ServerState::WaitingForKeyExchange {
+                client_identification,
+                client_kexinit,
+                server_kexinit,
+                kex_algorithm,
+                server_host_key_algorithm,
+                client_ephemeral_public_key,
+                ..
+            } => Some(KeyExchangeParameters {
+                client_ident: client_identification.clone(),
+                server_ident: SERVER_IDENTIFICATION.to_vec(),
+                client_kexinit: client_kexinit.clone(),
+                server_kexinit: server_kexinit.clone(),
+                eph_client_public_key: client_ephemeral_public_key.clone(),
+                server_host_key_algorithm: server_host_key_algorithm.clone(),
+                kex_algorithm: *kex_algorithm,
+            }),
             _ => None,
         }
     }
 
-    pub fn do_signature(&mut self, signature: Signature) {
+    pub fn do_key_exchange(&mut self, response: KeyExchangeResponse) {
         match &self.state {
-            ServerState::WaitingForSignature {
-                hash,
-                pub_hostkey,
-                shared_secret,
-                server_ephemeral_public_key,
+            ServerState::WaitingForKeyExchange {
                 encryption_client_to_server,
                 encryption_server_to_client,
+                server_host_key_algorithm,
+                ..
             } => {
                 let packet = Packet::new_msg_kex_ecdh_reply(
-                    &pub_hostkey.to_wire_encoding(),
-                    &server_ephemeral_public_key,
-                    &signature.to_wire_encoding(),
+                    &server_host_key_algorithm.public_key().to_wire_encoding(),
+                    &response.server_ephemeral_public_key,
+                    &response.signature.to_wire_encoding(),
                 );
 
                 self.packet_transport.queue_packet(packet);
                 self.state = ServerState::NewKeys {
-                    hash: *hash,
-                    shared_secret: shared_secret.clone(),
+                    hash: response.hash,
+                    shared_secret: response.shared_secret.clone(),
                     encryption_client_to_server: *encryption_client_to_server,
                     encryption_server_to_client: *encryption_server_to_client,
                 };
@@ -402,6 +413,35 @@ impl ServerConnection {
     pub fn send_plaintext_packet(&mut self, packet: Packet) {
         self.packet_transport.queue_packet(packet);
     }
+}
+
+pub fn do_key_exchange(
+    msg: KeyExchangeParameters,
+    private: &PlaintextPrivateKey,
+    rng: &mut dyn SshRng,
+) -> Result<KeyExchangeResponse> {
+    let server_secret = (msg.kex_algorithm.generate_secret)(rng);
+    let server_ephemeral_public_key = server_secret.pubkey;
+    let shared_secret = (server_secret.exchange)(&msg.eph_client_public_key)?;
+    let pub_hostkey = msg.server_host_key_algorithm.public_key();
+
+    let hash = crypto::key_exchange_hash(
+        &msg.client_ident,
+        &msg.server_ident,
+        &msg.client_kexinit,
+        &msg.server_kexinit,
+        &pub_hostkey.to_wire_encoding(),
+        &msg.eph_client_public_key,
+        &server_ephemeral_public_key,
+        &shared_secret,
+    );
+
+    Ok(KeyExchangeResponse {
+        hash,
+        server_ephemeral_public_key,
+        shared_secret,
+        signature: private.private_key.sign(&hash),
+    })
 }
 
 #[cfg(test)]

@@ -2,12 +2,24 @@ pub mod encrypt;
 
 use cluelessh_keys::{public::PublicKey, signature::Signature};
 use p256::ecdsa::signature::Verifier;
+use secrecy::ExposeSecret;
 use sha2::Digest;
 
 use crate::{
     packet::{EncryptedPacket, MsgKind, Packet, RawPacket},
     peer_error, Msg, Result, SshRng,
 };
+
+pub type SharedSecret = secrecy::Secret<SharedSecretInner>;
+
+#[derive(Clone)]
+pub struct SharedSecretInner(pub Vec<u8>);
+impl secrecy::Zeroize for SharedSecretInner {
+    fn zeroize(&mut self) {
+        secrecy::Zeroize::zeroize(&mut self.0);
+    }
+}
+impl secrecy::CloneableSecret for SharedSecretInner {}
 
 pub trait AlgorithmName {
     fn name(&self) -> &'static str;
@@ -36,7 +48,15 @@ pub struct KeyExchangeSecret {
     /// Q_x
     pub pubkey: Vec<u8>,
     /// Does the exchange, returning the shared secret K.
-    pub exchange: Box<dyn FnOnce(&[u8]) -> Result<Vec<u8>> + Send + Sync>,
+    pub exchange: Box<dyn FnOnce(&[u8]) -> Result<SharedSecret> + Send + Sync>,
+}
+
+pub fn kex_algorithm_by_name(name: &str) -> Option<KexAlgorithm> {
+    match name {
+        "curve25519-sha256" => Some(KEX_CURVE_25519_SHA256),
+        "ecdh-sha2-nistp256" => Some(KEX_ECDH_SHA2_NISTP256),
+        _ => None,
+    }
 }
 
 /// <https://datatracker.ietf.org/doc/html/rfc8731>
@@ -58,7 +78,9 @@ pub const KEX_CURVE_25519_SHA256: KexAlgorithm = KexAlgorithm {
                 let peer_public_key = x25519_dalek::PublicKey::from(peer_public_key);
                 let shared_secret = secret.diffie_hellman(&peer_public_key); // K
 
-                Ok(shared_secret.as_bytes().to_vec())
+                Ok(secrecy::Secret::new(SharedSecretInner(
+                    shared_secret.as_bytes().to_vec(),
+                )))
             }),
         }
     },
@@ -83,7 +105,9 @@ pub const KEX_ECDH_SHA2_NISTP256: KexAlgorithm = KexAlgorithm {
 
                 let shared_secret = secret.diffie_hellman(&peer_public_key); // K
 
-                Ok(shared_secret.raw_secret_bytes().to_vec())
+                Ok(secrecy::Secret::new(SharedSecretInner(
+                    shared_secret.raw_secret_bytes().to_vec(),
+                )))
             }),
         }
     },
@@ -105,6 +129,7 @@ impl AlgorithmName for EncryptionAlgorithm {
 }
 pub struct EncodedSshSignature(pub Vec<u8>);
 
+#[derive(Clone)]
 pub struct HostKeySigningAlgorithm {
     public_key: PublicKey,
 }
@@ -304,7 +329,7 @@ pub(crate) trait Keys: Send + Sync + 'static {
     fn rekey(
         &mut self,
         h: [u8; 32],
-        k: &[u8],
+        k: &SharedSecret,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
         is_server: bool,
@@ -326,7 +351,7 @@ impl Keys for Plaintext {
     fn rekey(
         &mut self,
         _: [u8; 32],
-        _: &[u8],
+        _: &SharedSecret,
         _: EncryptionAlgorithm,
         _: EncryptionAlgorithm,
         _: bool,
@@ -338,7 +363,7 @@ impl Keys for Plaintext {
 impl Session {
     pub(crate) fn new(
         h: [u8; 32],
-        k: &[u8],
+        k: &SharedSecret,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
         is_server: bool,
@@ -357,7 +382,7 @@ impl Session {
     fn from_keys(
         session_id: [u8; 32],
         h: [u8; 32],
-        k: &[u8],
+        k: &SharedSecret,
         alg_c2s: EncryptionAlgorithm,
         alg_s2c: EncryptionAlgorithm,
         is_server: bool,
@@ -414,7 +439,7 @@ impl Keys for Session {
     fn rekey(
         &mut self,
         h: [u8; 32],
-        k: &[u8],
+        k: &SharedSecret,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
         is_server: bool,
@@ -434,7 +459,7 @@ impl Keys for Session {
 /// Derive a key from the shared secret K and exchange hash H.
 /// <https://datatracker.ietf.org/doc/html/rfc4253#section-7.2>
 fn derive_key(
-    k: &[u8],
+    k: &SharedSecret,
     h: [u8; 32],
     letter: &str,
     session_id: [u8; 32],
@@ -446,7 +471,7 @@ fn derive_key(
 
     for i in 0..(padded_key_size / sha2len) {
         let mut hash = <sha2::Sha256 as sha2::Digest>::new();
-        encode_mpint_for_hash(k, |data| hash.update(data));
+        encode_mpint_for_hash(k.expose_secret().0.as_slice(), |data| hash.update(data));
         hash.update(h);
 
         if i == 0 {
@@ -480,7 +505,7 @@ pub fn key_exchange_hash(
     server_hostkey: &[u8],
     eph_client_public_key: &[u8],
     eph_server_public_key: &[u8],
-    shared_secret: &[u8],
+    shared_secret: &SharedSecret,
 ) -> [u8; 32] {
     let mut hash = sha2::Sha256::new();
     let add_hash = |hash: &mut sha2::Sha256, bytes: &[u8]| {
@@ -507,7 +532,7 @@ pub fn key_exchange_hash(
     // <https://datatracker.ietf.org/doc/html/rfc5656#section-4>
     hash_string(&mut hash, eph_client_public_key); // Q_C
     hash_string(&mut hash, eph_server_public_key); // Q_S
-    hash_mpint(&mut hash, shared_secret); // K
+    hash_mpint(&mut hash, shared_secret.expose_secret().0.as_slice()); // K
 
     let hash = hash.finalize();
     hash.into()

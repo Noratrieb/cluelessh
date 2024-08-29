@@ -1,6 +1,7 @@
 use std::{
     fs::File,
     io::{Read, Write},
+    os::fd::RawFd,
     path::Path,
 };
 
@@ -10,9 +11,10 @@ use rustix::{
     process::WaitOptions,
     thread::{Pid, UnshareFlags},
 };
-use tracing::{debug, trace};
+use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch};
+use tracing::{debug, trace, warn};
 
-use crate::SerializedConnectionState;
+use crate::{SerializedConnectionState, PRIVSEP_CONNECTION_RPC_CLIENT_FD, PRIVSEP_CONNECTION_STREAM_FD};
 
 #[tracing::instrument(skip(state), ret)]
 pub fn drop_privileges(state: &SerializedConnectionState) -> Result<()> {
@@ -39,6 +41,10 @@ pub fn drop_privileges(state: &SerializedConnectionState) -> Result<()> {
     }
 
     rustix::thread::set_no_new_privs(true)?;
+
+    if state.config.security.experimental_seccomp {
+        seccomp().wrap_err("setting up seccomp")?;
+    }
 
     Ok(())
 }
@@ -72,7 +78,8 @@ fn pipe() -> Result<(File, File)> {
 /// If this fails, there might be zombie child processes.
 /// Therefore, the caller must exit if this function fails.
 #[tracing::instrument]
-pub fn unshare_namespaces() -> Result<()> {
+fn unshare_namespaces() -> Result<()> {
+    // TODO: respect unprivileged_uid config and stuff
     let (mut child_ready_read, mut child_ready_write) = pipe()?;
     let (mut uid_map_ready_read, mut uid_map_ready_write) = pipe()?;
 
@@ -186,6 +193,89 @@ pub fn unshare_namespaces() -> Result<()> {
 
     // TODO: can we get rid of it entirely?
     rustix::fs::unmount("/old-root", UnmountFlags::DETACH).wrap_err("unmounting old root")?;
+
+    Ok(())
+}
+
+#[tracing::instrument]
+fn seccomp() -> Result<()> {
+    use seccompiler::{SeccompCmpArgLen as ArgLen, SeccompCmpOp as Op, SeccompCondition as Cond};
+
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => TargetArch::x86_64,
+        "aarch64" => TargetArch::aarch64,
+        arch => {
+            warn!("Seccomp not supported for architecture ({arch})m skipping");
+            return Ok(());
+        }
+    };
+
+    let limit_fd = |fd: RawFd| {
+        SeccompRule::new(vec![Cond::new(
+            0, // fd
+            ArgLen::Dword,
+            Op::Eq,
+            fd as u64,
+        )
+        .unwrap()])
+        .unwrap()
+    };
+
+    let filter = SeccompFilter::new(
+        vec![
+            (libc::SYS_write, vec![]),
+            (libc::SYS_epoll_create1, vec![]),
+            (libc::SYS_eventfd2, vec![]),
+            (libc::SYS_epoll_wait, vec![]),
+            (libc::SYS_epoll_ctl, vec![]),
+            (libc::SYS_fcntl, vec![]), // todo: restrict (72)
+            (libc::SYS_socketpair, vec![]),
+            (libc::SYS_sendmsg, vec![limit_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD)],),
+            (libc::SYS_recvmsg, vec![limit_fd(PRIVSEP_CONNECTION_RPC_CLIENT_FD)]),
+            (libc::SYS_sendto, vec![limit_fd(PRIVSEP_CONNECTION_STREAM_FD)]),
+            (libc::SYS_recvfrom, vec![limit_fd(PRIVSEP_CONNECTION_STREAM_FD)]),
+            (libc::SYS_getrandom, vec![]),
+            (libc::SYS_rt_sigaction, vec![]),
+            (libc::SYS_rt_sigprocmask, vec![]),
+            (libc::SYS_mmap, vec![]),
+            (libc::SYS_munmap, vec![]),
+            (libc::SYS_sched_getaffinity, vec![]),
+            (libc::SYS_sigaltstack, vec![]),
+            (libc::SYS_futex, vec![]),
+            (libc::SYS_read, vec![]),
+            (libc::SYS_mprotect, vec![]),
+            (libc::SYS_rseq, vec![]),
+            (libc::SYS_set_robust_list, vec![]),
+            (libc::SYS_prctl, vec![]),
+            (libc::SYS_close, vec![]),
+            (libc::SYS_madvise, vec![]),
+            (libc::SYS_exit, vec![]),
+            (libc::SYS_exit_group, vec![]),
+            (libc::SYS_sched_yield, vec![]),
+            (
+                libc::SYS_ioctl,
+                vec![SeccompRule::new(vec![Cond::new(
+                    1, // op
+                    // dword for musl, qword for glibc :D.
+                    // but since FIONBIO is <u32::MAX, we can use dword.
+                    ArgLen::Dword,
+                    Op::Eq,
+                    libc::FIONBIO, // non-blocking
+                )?])?],
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        SeccompAction::KillProcess,
+        SeccompAction::Allow,
+        arch,
+    )
+    .wrap_err("creating seccomp filter")?;
+
+    let program: BpfProgram = filter.try_into().wrap_err("compiling seccomp filter")?;
+
+    debug!("Installing seccomp filter");
+    seccompiler::apply_filter(&program).wrap_err("installing seccomp filter")?;
 
     Ok(())
 }

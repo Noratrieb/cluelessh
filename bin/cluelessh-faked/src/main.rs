@@ -4,7 +4,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use cluelessh_keys::private::EncryptedPrivateKeys;
 use cluelessh_tokio::{server::ServerAuth, Channel};
-use eyre::{Context, OptionExt, Result};
+use eyre::{eyre, Context, OptionExt, Result};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -77,15 +77,25 @@ async fn main() -> eyre::Result<()> {
             !! DO NOT ENTER PASSWORDS YOU DON'T WANT STOLEN !!\r\n"
                 .to_owned(),
         ),
-        sign_with_hostkey: Arc::new(move |msg| {
+        do_key_exchange: Arc::new(move |msg| {
             let host_keys = host_keys.clone();
             Box::pin(async move {
                 let private = host_keys
                     .iter()
-                    .find(|privkey| privkey.private_key.public_key() == msg.public_key)
+                    .find(|privkey| {
+                        privkey.private_key.public_key()
+                            == msg.server_host_key_algorithm.public_key()
+                    })
                     .ok_or_eyre("missing private key")?;
 
-                Ok(private.private_key.sign(&msg.hash))
+                // TODO: non-shitty error handling here
+
+                cluelessh_protocol::transport::server::do_key_exchange(
+                    msg,
+                    private,
+                    &mut cluelessh_protocol::OsRng,
+                )
+                .map_err(|_| eyre!("error during key exchange"))
             })
         }),
     };

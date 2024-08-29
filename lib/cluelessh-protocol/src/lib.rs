@@ -4,8 +4,6 @@ use std::mem;
 
 use auth::AuthOption;
 use cluelessh_connection::ChannelOperation;
-use cluelessh_keys::public::PublicKey;
-use cluelessh_keys::signature::Signature;
 use tracing::debug;
 
 // Re-exports
@@ -14,11 +12,11 @@ pub use cluelessh_connection::{ChannelUpdate, ChannelUpdateKind};
 pub use cluelessh_transport as transport;
 pub use cluelessh_transport::{Result, SshStatus};
 
-pub struct ThreadRngRand;
-impl transport::SshRng for ThreadRngRand {
+pub struct OsRng;
+impl transport::SshRng for OsRng {
     fn fill_bytes(&mut self, dest: &mut [u8]) {
         use rand::RngCore;
-        rand::thread_rng().fill_bytes(dest);
+        rand::rngs::OsRng.fill_bytes(dest);
     }
 }
 
@@ -78,12 +76,12 @@ impl ServerConnection {
         Ok(())
     }
 
-    pub fn is_waiting_on_signature(&self) -> Option<(&PublicKey, [u8; 32])> {
-        self.transport.is_waiting_on_signature()
+    pub fn is_waiting_on_key_exchange(&self) -> Option<transport::server::KeyExchangeParameters> {
+        self.transport.is_waiting_on_key_exchange()
     }
 
-    pub fn do_signature(&mut self, signature: Signature) {
-        self.transport.do_signature(signature);
+    pub fn do_key_exchange(&mut self, response: transport::server::KeyExchangeResponse) {
+        self.transport.do_key_exchange(response);
     }
 
     pub fn next_msg_to_send(&mut self) -> Option<cluelessh_transport::Msg> {

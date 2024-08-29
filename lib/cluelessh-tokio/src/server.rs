@@ -1,5 +1,6 @@
 use cluelessh_connection::{ChannelKind, ChannelNumber, ChannelOperation};
-use cluelessh_keys::{public::PublicKey, signature::Signature};
+use cluelessh_keys::public::PublicKey;
+use cluelessh_transport::server::{KeyExchangeParameters, KeyExchangeResponse};
 use futures::future::BoxFuture;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -54,7 +55,7 @@ enum Operation {
     VerifyPassword(String, Result<bool>),
     CheckPubkey(Result<bool>, String, Vec<u8>),
     VerifySignature(String, Result<bool>),
-    SignatureReceived(Result<Signature>),
+    KeyExchangeResponseReceived(Result<KeyExchangeResponse>),
 }
 
 pub type AuthFn<A, R> = Arc<dyn Fn(A) -> BoxFuture<'static, R> + Send + Sync>;
@@ -64,7 +65,7 @@ pub struct ServerAuth {
     pub verify_password: Option<AuthFn<VerifyPassword, Result<bool>>>,
     pub verify_signature: Option<AuthFn<VerifySignature, Result<bool>>>,
     pub check_pubkey: Option<AuthFn<CheckPubkey, Result<bool>>>,
-    pub sign_with_hostkey: AuthFn<SignWithHostKey, Result<Signature>>,
+    pub do_key_exchange: AuthFn<KeyExchangeParameters, Result<KeyExchangeResponse>>,
     pub auth_banner: Option<String>,
 }
 fn _assert_send_sync() {
@@ -150,7 +151,7 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
             channels: HashMap::new(),
             proto: cluelessh_protocol::ServerConnection::new(
                 cluelessh_transport::server::ServerConnection::new(
-                    cluelessh_protocol::ThreadRngRand,
+                    cluelessh_protocol::OsRng,
                     transport_config,
                 ),
                 options,
@@ -169,16 +170,18 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
     /// Executes one loop iteration of the main loop.
     // IMPORTANT: no operations on this struct should ever block the main loop, except this one.
     pub async fn progress(&mut self) -> Result<(), Error> {
-        if let Some((public_key, hash)) = self.proto.is_waiting_on_signature() {
+        if let Some(params) = self.proto.is_waiting_on_key_exchange() {
             if !self.signature_in_progress {
                 self.signature_in_progress = true;
 
                 let send = self.operations_send.clone();
-                let public_key = public_key.clone();
-                let sign_with_hostkey = self.auth_verify.sign_with_hostkey.clone();
+
+                let do_key_exchange = self.auth_verify.do_key_exchange.clone();
                 tokio::spawn(async move {
-                    let result = sign_with_hostkey(SignWithHostKey { public_key, hash }).await;
-                    let _ = send.send(Operation::SignatureReceived(result)).await;
+                    let result = do_key_exchange(params).await;
+                    let _ = send
+                        .send(Operation::KeyExchangeResponseReceived(result))
+                        .await;
                 });
             }
         }
@@ -353,9 +356,9 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
                     Some(Operation::VerifyPassword(user, result)) => if let Some(auth) = self.proto.auth() {
                         auth.verification_result(result?, user);
                     },
-                    Some(Operation::SignatureReceived(signature)) => {
+                    Some(Operation::KeyExchangeResponseReceived(signature)) => {
                         let signature = signature?;
-                        self.proto.do_signature(signature);
+                        self.proto.do_key_exchange(signature);
                     }
                     None => {}
                 }

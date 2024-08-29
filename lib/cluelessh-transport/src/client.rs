@@ -4,8 +4,7 @@ use tracing::{debug, info, trace};
 
 use crate::{
     crypto::{
-        self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeyVerifyAlgorithm,
-        KeyExchangeSecret, SupportedAlgorithms,
+        self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeyVerifyAlgorithm, KeyExchangeSecret, SharedSecret, SupportedAlgorithms
     },
     packet::{Packet, PacketTransport, ProtocolIdentParser},
     peer_error, Msg, Result, SshRng, SshStatus,
@@ -46,7 +45,7 @@ enum ClientState {
     },
     NewKeys {
         h: [u8; 32],
-        k: Vec<u8>,
+        k: SharedSecret,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
     },

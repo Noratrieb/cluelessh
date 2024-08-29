@@ -46,6 +46,10 @@ pub struct SecurityConfig {
     pub unprivileged_gid: Option<u32>,
     /// The username of an unprivileged user.
     pub unprivileged_user: Option<String>,
+
+    /// Apply experimental seccomp filters.
+    #[serde(default = "default_false")]
+    pub experimental_seccomp: bool,
 }
 
 impl Config {
@@ -71,6 +75,11 @@ fn default_info() -> String {
 fn default_true() -> bool {
     true
 }
+
+fn default_false() -> bool {
+    false
+}
+
 
 fn addr_default() -> IpAddr {
     IpAddr::V4(Ipv4Addr::UNSPECIFIED)

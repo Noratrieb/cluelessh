@@ -1,5 +1,5 @@
 pub mod client;
-mod crypto;
+pub mod crypto;
 pub mod packet;
 pub mod server;
 
@@ -25,7 +25,7 @@ impl From<ParseError> for SshStatus {
     }
 }
 
-pub trait SshRng {
+pub trait SshRng: Send + Sync {
     fn fill_bytes(&mut self, dest: &mut [u8]);
 }
 struct SshRngRandAdapter<'a>(&'a mut dyn SshRng);

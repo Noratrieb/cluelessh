@@ -5,7 +5,7 @@ use std::mem;
 
 use tracing::{debug, trace};
 
-use crate::crypto::{self, EncryptionAlgorithm, Keys, Plaintext, Session};
+use crate::crypto::{self, EncryptionAlgorithm, Keys, Plaintext, Session, SharedSecret};
 use crate::peer_error;
 use crate::Result;
 use cluelessh_format::numbers;
@@ -112,7 +112,7 @@ impl PacketTransport {
     pub(crate) fn set_key(
         &mut self,
         h: [u8; 32],
-        k: &[u8],
+        k: &SharedSecret,
         encryption_client_to_server: EncryptionAlgorithm,
         encryption_server_to_client: EncryptionAlgorithm,
         is_server: bool,
