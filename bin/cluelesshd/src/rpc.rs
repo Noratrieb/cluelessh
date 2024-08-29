@@ -12,7 +12,6 @@ use std::process::Stdio;
 use cluelessh_keys::private::PlaintextPrivateKey;
 use cluelessh_keys::public::PublicKey;
 use cluelessh_keys::signature::Signature;
-use cluelessh_protocol::auth::CheckPubkey;
 use cluelessh_protocol::auth::VerifySignature;
 use cluelessh_transport::crypto::AlgorithmName;
 use eyre::bail;
@@ -51,18 +50,15 @@ enum Request {
     KeyExchange(KeyExchangeRequest),
     CheckPublicKey {
         user: String,
-        session_identifier: [u8; 32],
-        pubkey_alg_name: String,
-        pubkey: Vec<u8>,
+        pubkey: PublicKey,
     },
     /// Verify that the public key signature for the user is okay.
     /// If it is okay, store the user so we can later spawn a process as them.
     VerifySignature {
         user: String,
         session_identifier: [u8; 32],
-        pubkey_alg_name: String,
-        pubkey: Vec<u8>,
-        signature: Vec<u8>,
+        public_key: PublicKey,
+        signature: Signature,
     },
     /// Request a PTY. We create a new PTY and give the client an FD to the controller.
     PtyReq(PtyRequest),
@@ -253,26 +249,18 @@ impl Server {
             }
             Request::CheckPublicKey {
                 user,
-                session_identifier,
-                pubkey_alg_name,
-                pubkey,
+                pubkey: public_key,
             } => {
-                let is_ok = crate::auth::check_pubkey(CheckPubkey {
-                    user,
-                    session_identifier,
-                    pubkey_alg_name,
-                    pubkey,
-                })
-                .await
-                .map_err(|err| err.to_string());
+                let is_ok = crate::auth::check_pubkey(user, public_key)
+                    .await
+                    .map_err(|err| err.to_string());
 
                 self.respond::<CheckPublicKeyResponse>(is_ok).await?;
             }
             Request::VerifySignature {
                 user,
                 session_identifier,
-                pubkey_alg_name,
-                pubkey,
+                public_key,
                 signature,
             } => {
                 if self.authenticated_user.is_some() {
@@ -282,8 +270,7 @@ impl Server {
                 let is_ok = crate::auth::verify_signature(VerifySignature {
                     user,
                     session_identifier,
-                    pubkey_alg_name,
-                    pubkey,
+                    public_key,
                     signature,
                 })
                 .await
@@ -492,35 +479,22 @@ impl Client {
         })
     }
 
-    pub async fn check_public_key(
-        &self,
-        user: String,
-        session_identifier: [u8; 32],
-        pubkey_alg_name: String,
-        pubkey: Vec<u8>,
-    ) -> Result<bool> {
-        self.request_response::<CheckPublicKeyResponse>(&Request::CheckPublicKey {
-            user,
-            session_identifier,
-            pubkey_alg_name,
-            pubkey,
-        })
-        .await
+    pub async fn check_public_key(&self, user: String, pubkey: PublicKey) -> Result<bool> {
+        self.request_response::<CheckPublicKeyResponse>(&Request::CheckPublicKey { user, pubkey })
+            .await
     }
 
     pub async fn verify_signature(
         &self,
         user: String,
         session_identifier: [u8; 32],
-        pubkey_alg_name: String,
-        pubkey: Vec<u8>,
-        signature: Vec<u8>,
+        public_key: PublicKey,
+        signature: Signature,
     ) -> Result<bool> {
         self.request_response::<VerifySignatureResponse>(&Request::VerifySignature {
             user,
             session_identifier,
-            pubkey_alg_name,
-            pubkey,
+            public_key,
             signature,
         })
         .await

@@ -2,14 +2,15 @@
 
 // <https://datatracker.ietf.org/doc/html/rfc4716> exists but is kinda weird
 
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 use base64::Engine;
-use tracing::debug;
 
 use cluelessh_format::{ParseError, Reader, Writer};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::signature::Signature;
+
+#[derive(Clone, PartialEq, Eq)]
 pub enum PublicKey {
     Ed25519 {
         public_key: ed25519_dalek::VerifyingKey,
@@ -87,31 +88,24 @@ impl PublicKey {
         }
     }
 
-    pub fn verify_signature(&self, data: &[u8], signature: &[u8]) -> bool {
+    pub fn verify_signature(&self, data: &[u8], signature: &Signature) -> bool {
         match self {
-            PublicKey::Ed25519 { public_key } => {
-                let mut s = Reader::new(signature);
-                let Ok(alg) = s.utf8_string() else {
-                    return false;
-                };
-                if alg != "ssh-ed25519" {
-                    return false;
+            PublicKey::Ed25519 { public_key } => match signature {
+                Signature::Ed25519 { signature } => {
+                    public_key.verify_strict(data, &signature).is_ok()
                 }
-                let Ok(signature) = s.string() else {
-                    return false;
-                };
-
-                let Ok(signature) = ed25519_dalek::Signature::from_slice(signature) else {
-                    debug!("Invalid signature length");
-                    return false;
-                };
-
-                public_key.verify_strict(data, &signature).is_ok()
-            }
+                _ => false,
+            },
             PublicKey::EcdsaSha2NistP256 { .. } => {
                 todo!("ecdsa-sha2-nistp256 signature verification")
             }
         }
+    }
+}
+
+impl Debug for PublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self, f)
     }
 }
 

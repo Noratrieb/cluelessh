@@ -14,7 +14,7 @@ use tokio::{
 };
 
 use cluelessh_protocol::{
-    auth::{AuthOption, CheckPubkey, VerifyPassword, VerifySignature},
+    auth::{AuthOption, CheckPublicKey, VerifyPassword, VerifySignature},
     ChannelUpdateKind, SshStatus,
 };
 use eyre::{eyre, ContextCompat, OptionExt, Result, WrapErr};
@@ -53,7 +53,7 @@ pub struct ServerConnection<S> {
 
 enum Operation {
     VerifyPassword(String, Result<bool>),
-    CheckPubkey(Result<bool>, String, Vec<u8>),
+    CheckPubkey(Result<bool>, PublicKey),
     VerifySignature(String, Result<bool>),
     KeyExchangeResponseReceived(Result<KeyExchangeResponse>),
 }
@@ -64,7 +64,7 @@ pub type AuthFn<A, R> = Arc<dyn Fn(A) -> BoxFuture<'static, R> + Send + Sync>;
 pub struct ServerAuth {
     pub verify_password: Option<AuthFn<VerifyPassword, Result<bool>>>,
     pub verify_signature: Option<AuthFn<VerifySignature, Result<bool>>>,
-    pub check_pubkey: Option<AuthFn<CheckPubkey, Result<bool>>>,
+    pub check_pubkey: Option<AuthFn<CheckPublicKey, Result<bool>>>,
     pub do_key_exchange: AuthFn<KeyExchangeParameters, Result<KeyExchangeResponse>>,
     pub auth_banner: Option<String>,
 }
@@ -215,8 +215,7 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
                             let _ = send
                                 .send(Operation::CheckPubkey(
                                     result,
-                                    check_pubkey.pubkey_alg_name,
-                                    check_pubkey.pubkey,
+                                    check_pubkey.public_key,
                                 ))
                                 .await;
                         });
@@ -350,8 +349,8 @@ impl<S: AsyncRead + AsyncWrite> ServerConnection<S> {
                     Some(Operation::VerifySignature(user, result)) => if let Some(auth) = self.proto.auth() {
                         auth.verification_result(result?, user);
                     },
-                    Some(Operation::CheckPubkey(result, alg, key_blob)) => if let Some(auth) = self.proto.auth() {
-                        auth.pubkey_check_result(result?, &alg, &key_blob);
+                    Some(Operation::CheckPubkey(result, public_key)) => if let Some(auth) = self.proto.auth() {
+                        auth.pubkey_check_result(result?, public_key);
                     },
                     Some(Operation::VerifyPassword(user, result)) => if let Some(auth) = self.proto.auth() {
                         auth.verification_result(result?, user);

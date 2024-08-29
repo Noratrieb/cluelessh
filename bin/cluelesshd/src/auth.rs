@@ -5,8 +5,9 @@ use std::io;
 use cluelessh_keys::{
     authorized_keys::{self, AuthorizedKeys},
     public::{PublicKey, PublicKeyWithComment},
+    signature::Signature,
 };
-use cluelessh_protocol::auth::{CheckPubkey, VerifySignature};
+use cluelessh_protocol::auth::VerifySignature;
 use eyre::eyre;
 use tracing::debug;
 use users::{os::unix::UserExt, User};
@@ -58,20 +59,13 @@ impl UserPublicKey {
         }
     }
 
-    pub fn verify_signature(&self, data: &[u8], signature: &[u8]) -> bool {
+    pub fn verify_signature(&self, data: &[u8], signature: &Signature) -> bool {
         self.key.key.verify_signature(data, signature)
     }
 }
 
 pub async fn verify_signature(auth: VerifySignature) -> eyre::Result<Option<User>> {
-    let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
-        return Ok(None);
-    };
-    if auth.pubkey_alg_name != public_key.algorithm_name() {
-        return Ok(None);
-    }
-
-    let result = UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
+    let result = UserPublicKey::for_user_and_key(auth.user.clone(), &auth.public_key).await;
 
     debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey signature");
 
@@ -82,7 +76,7 @@ pub async fn verify_signature(auth: VerifySignature) -> eyre::Result<Option<User
             let sign_data = cluelessh_keys::signature::signature_data(
                 auth.session_identifier,
                 &auth.user,
-                &public_key,
+                &auth.public_key,
             );
 
             if user_key.verify_signature(&sign_data, &auth.signature) {
@@ -100,16 +94,10 @@ pub async fn verify_signature(auth: VerifySignature) -> eyre::Result<Option<User
     }
 }
 
-pub async fn check_pubkey(auth: CheckPubkey) -> eyre::Result<bool> {
-    let Ok(public_key) = PublicKey::from_wire_encoding(&auth.pubkey) else {
-        return Ok(false);
-    };
-    if auth.pubkey_alg_name != public_key.algorithm_name() {
-        return Ok(false);
-    }
-    let result = UserPublicKey::for_user_and_key(auth.user.clone(), &public_key).await;
+pub async fn check_pubkey(user: String, public_key: PublicKey) -> eyre::Result<bool> {
+    let result = UserPublicKey::for_user_and_key(user.clone(), &public_key).await;
 
-    debug!(user = %auth.user, err = ?result.as_ref().err(), "Attempting publickey check");
+    debug!(%user, err = ?result.as_ref().err(), "Attempting publickey check");
 
     match result {
         Ok(_) => Ok(true),

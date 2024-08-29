@@ -277,6 +277,7 @@ pub mod auth {
     use std::collections::{HashSet, VecDeque};
 
     use cluelessh_format::{numbers, NameList};
+    use cluelessh_keys::{public::PublicKey, signature::Signature};
     use cluelessh_transport::{packet::Packet, peer_error, Result};
     use tracing::debug;
 
@@ -293,7 +294,7 @@ pub mod auth {
     pub enum ServerRequest {
         VerifyPassword(VerifyPassword),
         /// Check whether a pubkey is usable.
-        CheckPubkey(CheckPubkey),
+        CheckPubkey(CheckPublicKey),
         /// Verify the signature from a pubkey.
         VerifySignature(VerifySignature),
     }
@@ -305,20 +306,18 @@ pub mod auth {
     }
 
     #[derive(Debug, Clone)]
-    pub struct CheckPubkey {
+    pub struct CheckPublicKey {
         pub user: String,
-        pub session_identifier: [u8; 32],
-        pub pubkey_alg_name: String,
-        pub pubkey: Vec<u8>,
+        pub public_key: PublicKey,
     }
 
     #[derive(Debug, Clone)]
     pub struct VerifySignature {
         pub user: String,
         pub session_identifier: [u8; 32],
-        pub pubkey_alg_name: String,
-        pub pubkey: Vec<u8>,
-        pub signature: Vec<u8>,
+        pub public_key: PublicKey,
+        /// The signature. Guaranteed to match the algorithm of `public_key`.
+        pub signature: Signature,
     }
 
     #[derive(Debug, PartialEq, Eq, Hash)]
@@ -405,24 +404,31 @@ pub mod auth {
                     let pubkey_alg_name = p.utf8_string()?;
                     let public_key_blob = p.string()?;
 
+                    let public_key = PublicKey::from_wire_encoding(public_key_blob)?;
+                    if pubkey_alg_name != public_key.algorithm_name() {
+                        return Err(peer_error!("algorithm name mismatch"));
+                    }
+
                     // Whether the client is just checking whether the public key is allowed.
                     if !has_signature {
-                        self.server_requests
-                            .push_back(ServerRequest::CheckPubkey(CheckPubkey {
+                        self.server_requests.push_back(ServerRequest::CheckPubkey(
+                            CheckPublicKey {
                                 user: username.to_owned(),
-                                session_identifier: self.session_ident,
-                                pubkey_alg_name: pubkey_alg_name.to_owned(),
-                                pubkey: public_key_blob.to_vec(),
-                            }));
+                                public_key,
+                            },
+                        ));
                     } else {
                         let signature = p.string()?;
+                        let signature = Signature::from_wire_encoding(signature)?;
+                        if signature.algorithm_name() != public_key.algorithm_name() {
+                            return Err(peer_error!("signature algorithm name mismatch"));
+                        }
                         self.server_requests
                             .push_back(ServerRequest::VerifySignature(VerifySignature {
                                 user: username.to_owned(),
                                 session_identifier: self.session_ident,
-                                pubkey_alg_name: pubkey_alg_name.to_owned(),
-                                pubkey: public_key_blob.to_vec(),
-                                signature: signature.to_vec(),
+                                public_key,
+                                signature,
                             }));
                     }
                 }
@@ -443,9 +449,12 @@ pub mod auth {
             Ok(())
         }
 
-        pub fn pubkey_check_result(&mut self, is_ok: bool, alg: &str, key_blob: &[u8]) {
+        pub fn pubkey_check_result(&mut self, is_ok: bool, key: PublicKey) {
             if is_ok {
-                self.queue_packet(Packet::new_msg_userauth_pk_ok(alg.as_bytes(), key_blob));
+                self.queue_packet(Packet::new_msg_userauth_pk_ok(
+                    key.algorithm_name().as_bytes(),
+                    &key.to_wire_encoding(),
+                ));
             } else {
                 self.send_failure();
                 // It's ok, don't treat this as a fatal failure.

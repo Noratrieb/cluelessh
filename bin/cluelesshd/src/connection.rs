@@ -69,8 +69,7 @@ async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
                     .verify_signature(
                         msg.user,
                         msg.session_identifier,
-                        msg.pubkey_alg_name,
-                        msg.pubkey,
+                        msg.public_key,
                         msg.signature,
                     )
                     .await
@@ -82,9 +81,7 @@ async fn connection_inner(state: SerializedConnectionState) -> Result<()> {
                 rpc_client
                     .check_public_key(
                         msg.user,
-                        msg.session_identifier,
-                        msg.pubkey_alg_name,
-                        msg.pubkey,
+                        msg.public_key,
                     )
                     .await
             })

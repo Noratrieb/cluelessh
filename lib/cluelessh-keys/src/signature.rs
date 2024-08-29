@@ -18,7 +18,7 @@ pub fn signature_data(session_id: [u8; 32], username: &str, pubkey: &PublicKey) 
     s.finish()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Signature {
     Ed25519 { signature: ed25519_dalek::Signature },
     EcdsaSha2NistP256 { signature: p256::ecdsa::Signature },
