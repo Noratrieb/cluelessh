@@ -14,6 +14,7 @@ impl std::error::Error for ParseError {}
 
 pub type Result<T, E = ParseError> = std::result::Result<T, E>;
 
+#[derive(Clone)]
 pub struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
@@ -121,6 +122,10 @@ impl Writer {
 
     pub fn u32(&mut self, v: u32) {
         self.raw(&u32::to_be_bytes(v));
+    }
+
+    pub fn u64(&mut self, v: u64) {
+        self.raw(&u64::to_be_bytes(v));
     }
 
     pub fn raw(&mut self, v: &[u8]) {

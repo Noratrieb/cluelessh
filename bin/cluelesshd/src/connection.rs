@@ -376,7 +376,10 @@ impl SessionState {
                 if let Some(writer) = &mut self.writer {
                     writer.shutdown().await?;
                 }
+                // TODO: somehow this isn't enough to close an SFTP connection....
                 self.writer = None;
+                self.reader = None;
+                self.reader_ext = None;
             }
             ChannelUpdateKind::Open(_)
             | ChannelUpdateKind::Closed
@@ -409,7 +412,11 @@ impl SessionState {
         Ok(())
     }
 
-    async fn shell(&mut self, shell_command: Option<String>, subsystem: Option<String>) -> Result<()> {
+    async fn shell(
+        &mut self,
+        shell_command: Option<String>,
+        subsystem: Option<String>,
+    ) -> Result<()> {
         let mut fds = self
             .rpc_client
             .shell(

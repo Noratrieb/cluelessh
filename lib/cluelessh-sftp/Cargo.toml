@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+eyre.workspace = true
+tokio = { version = "1.40.0", features = ["full"] }
+cluelessh-transport = { path = "../cluelessh-transport" }
+cluelessh-format = { path = "../cluelessh-format" }
+tracing.workspace = true
+rustix = { version = "0.38.35", features = ["fs"] }
 
 [lints]
 workspace = true

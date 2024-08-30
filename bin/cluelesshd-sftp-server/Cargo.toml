@@ -7,6 +7,9 @@ edition = "2021"
 eyre.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+cluelessh-sftp = { path = "../../lib/cluelessh-sftp" }
+tokio = "1.40.0"
+rustix = { version = "0.38.35", features = ["stdio"] }
 
 [lints]
 workspace = true
