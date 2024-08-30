@@ -13,6 +13,7 @@ use cluelessh_format::{NameList, Reader, Writer};
 
 /// Frames the byte stream into packets.
 pub(crate) struct PacketTransport {
+    // TODO: I think we need independent keys for either direction to handle NEWKEYS nicely.
     keys: Box<dyn Keys>,
     recv_next_packet: PacketParser,
 
@@ -43,6 +44,23 @@ impl Msg {
     }
 }
 
+#[must_use]
+pub enum RecvBytesResult {
+    /// Only some of the bytes were consumed.
+    /// The caller should advanced its state machine first before calling again.
+    /// This can happen due to SSH_MSG_NEWKEYS.
+    Partial { consumed: usize },
+    /// All bytes were consumed.
+    /// There may be new updates.
+    Full,
+}
+
+#[must_use]
+enum RecvBytesStepResult {
+    Pending,
+    ReadPacket { consumed: usize, is_new_keys: bool },
+}
+
 impl PacketTransport {
     pub(crate) fn new() -> Self {
         PacketTransport {
@@ -56,17 +74,28 @@ impl PacketTransport {
             send_next_seq_nr: 0,
         }
     }
-    pub(crate) fn recv_bytes(&mut self, mut bytes: &[u8]) -> Result<()> {
-        while let Some(consumed) = self.recv_bytes_step(bytes)? {
+    pub(crate) fn recv_bytes(&mut self, mut bytes: &[u8]) -> Result<RecvBytesResult> {
+        let mut total_consumed = 0;
+        while let RecvBytesStepResult::ReadPacket {
+            consumed,
+            is_new_keys,
+        } = self.recv_bytes_step(bytes)?
+        {
+            total_consumed += consumed;
+            if is_new_keys {
+                return Ok(RecvBytesResult::Partial {
+                    consumed: total_consumed,
+                });
+            }
             bytes = &bytes[consumed..];
             if bytes.is_empty() {
                 break;
             }
         }
-        Ok(())
+        Ok(RecvBytesResult::Full)
     }
 
-    fn recv_bytes_step(&mut self, bytes: &[u8]) -> Result<Option<usize>> {
+    fn recv_bytes_step(&mut self, bytes: &[u8]) -> Result<RecvBytesStepResult> {
         // This would not work if we buffer two packets where one changes keys in between,
         // but SSH_MSG_NEWKEYS messages guarantee that this cannot happen.
 
@@ -74,13 +103,18 @@ impl PacketTransport {
             self.recv_next_packet
                 .recv_bytes(bytes, &mut *self.keys, self.recv_next_seq_nr)?;
         if let Some((consumed, result)) = result {
+            let is_new_keys = result.packet_type() == numbers::SSH_MSG_NEWKEYS;
+
             self.recv_packets.push_back(result);
             self.recv_next_seq_nr = self.recv_next_seq_nr.wrapping_add(1);
             self.recv_next_packet = PacketParser::new();
-            return Ok(Some(consumed));
+            return Ok(RecvBytesStepResult::ReadPacket {
+                consumed,
+                is_new_keys,
+            });
         }
 
-        Ok(None)
+        Ok(RecvBytesStepResult::Pending)
     }
 
     pub(crate) fn queue_packet(&mut self, packet: Packet) {
@@ -179,6 +213,10 @@ impl Packet {
         //if (bytes.len() + 4) % 8 != 0 {
         //    return Err(peer_error!("full packet length must be multiple of 8: {}", bytes.len()));
         //}
+
+        if payload.len() < 1 {
+            return Err(peer_error!("empty packet without a type"));
+        }
 
         Ok(Self {
             payload: payload.to_vec(),

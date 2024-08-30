@@ -6,6 +6,7 @@ use crate::crypto::{
 };
 use crate::packet::{
     KeyExchangeEcDhInitPacket, KeyExchangeInitPacket, Packet, PacketTransport, ProtocolIdentParser,
+    RecvBytesResult,
 };
 use crate::{peer_error, Msg, SshRng, SshStatus};
 use crate::{Result, SessionId};
@@ -67,6 +68,7 @@ enum ServerState {
     },
     ServiceRequest {
         session_id: SessionId,
+        may_send_extensions: bool,
     },
     Open {
         session_id: SessionId,
@@ -103,7 +105,17 @@ impl ServerConnection {
         }
     }
 
-    pub fn recv_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+    pub fn recv_bytes(&mut self, mut bytes: &[u8]) -> Result<()> {
+        while let RecvBytesResult::Partial { consumed } = self.recv_bytes_inner(bytes)? {
+            bytes = &bytes[consumed..];
+            if bytes.is_empty() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn recv_bytes_inner(&mut self, bytes: &[u8]) -> Result<RecvBytesResult> {
         if let ServerState::ProtoExchange { ident_parser } = &mut self.state {
             ident_parser.recv_bytes(bytes);
             if let Some(client_identification) = ident_parser.get_peer_ident() {
@@ -114,20 +126,20 @@ impl ServerConnection {
                 };
             }
             // This means that we must be called at least twice, which is fine I think.
-            return Ok(());
+            return Ok(RecvBytesResult::Full);
         }
 
-        self.packet_transport.recv_bytes(bytes)?;
+        let consumed = self.packet_transport.recv_bytes(bytes)?;
 
         while let Some(packet) = self.packet_transport.recv_next_packet() {
-            let packet_type = packet.payload.first().unwrap_or(&0xFF);
-            let packet_type_string = numbers::packet_type_to_string(*packet_type);
+            let packet_type = packet.packet_type();
+            let packet_type_string = numbers::packet_type_to_string(packet_type);
 
             trace!(%packet_type, %packet_type_string, packet_len = %packet.payload.len(), "Received packet");
 
             // Handle some packets ignoring the state.
-            match packet.payload.first().copied() {
-                Some(numbers::SSH_MSG_DISCONNECT) => {
+            match packet_type {
+                numbers::SSH_MSG_DISCONNECT => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.1>
                     let mut disconnect = Reader::new(&packet.payload[1..]);
                     let reason = disconnect.u32()?;
@@ -140,13 +152,13 @@ impl ServerConnection {
 
                     return Err(SshStatus::Disconnect);
                 }
-                Some(numbers::SSH_MSG_IGNORE) => {
+                numbers::SSH_MSG_IGNORE => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.2>
                     let mut p = Reader::new(&packet.payload[1..]);
                     let _ = p.string()?;
                     continue;
                 }
-                Some(numbers::SSH_MSG_DEBUG) => {
+                numbers::SSH_MSG_DEBUG => {
                     // <https://datatracker.ietf.org/doc/html/rfc4253#section-11.3>
                     let mut p = Reader::new(&packet.payload[1..]);
                     let always_display = p.bool()?;
@@ -174,6 +186,11 @@ impl ServerConnection {
 
                     let kex_algorithm = sup_algs.key_exchange.find(false, kex.kex_algorithms.0)?;
                     debug!(name = %kex_algorithm.name(), "Using KEX algorithm");
+
+                    // <https://datatracker.ietf.org/doc/html/rfc8308#section-2.1>
+                    // TODO: Send some extensions
+                    // TODO: Because of the terrapin attack, we probably want to implement strict kex for that.
+                    let _client_supports_extensions = kex.kex_algorithms.contains("ext-info-c");
 
                     let server_host_key_algorithm = sup_algs
                         .hostkey_sign
@@ -218,9 +235,12 @@ impl ServerConnection {
 
                     let mut cookie = [0; 16];
                     self.rng.fill_bytes(&mut cookie);
+                    // <https://datatracker.ietf.org/doc/html/rfc8308#section-2.1>
+                    let kex_algorithms = format!("{},ext-info-s", kex_algorithm.name());
                     let server_kexinit = KeyExchangeInitPacket {
                         cookie,
-                        kex_algorithms: NameList::one(kex_algorithm.name()),
+                        // TODO: we should send *all* our algorithms here...
+                        kex_algorithms: NameList::multi(&kex_algorithms),
                         server_host_key_algorithms: NameList::one(server_host_key_algorithm.name()),
                         encryption_algorithms_client_to_server: NameList::one(
                             encryption_client_to_server.name(),
@@ -310,38 +330,66 @@ impl ServerConnection {
                     );
                     self.state = ServerState::ServiceRequest {
                         session_id: SessionId(*h),
+                        may_send_extensions: true, // TODO: false if the client didn't advertise them
                     };
                 }
-                ServerState::ServiceRequest { session_id } => {
-                    if packet.payload.first() != Some(&numbers::SSH_MSG_SERVICE_REQUEST) {
-                        return Err(peer_error!("did not send SSH_MSG_SERVICE_REQUEST"));
-                    }
-                    let mut p = Reader::new(&packet.payload[1..]);
-                    let service = p.utf8_string()?;
-                    debug!(%service, "Client requesting service");
+                ServerState::ServiceRequest {
+                    session_id,
+                    may_send_extensions,
+                } => match packet_type {
+                    numbers::SSH_MSG_SERVICE_REQUEST => {
+                        let mut p = packet.payload_parser();
+                        p.u8()?;
+                        let service = p.utf8_string()?;
+                        debug!(%service, "Client requesting service");
 
-                    if service != "ssh-userauth" {
-                        return Err(peer_error!("only supports ssh-userauth"));
-                    }
+                        if service != "ssh-userauth" {
+                            return Err(peer_error!("only supports ssh-userauth"));
+                        }
 
-                    self.packet_transport.queue_packet(Packet {
-                        payload: {
-                            let mut writer = Writer::new();
-                            writer.u8(numbers::SSH_MSG_SERVICE_ACCEPT);
-                            writer.string(service.as_bytes());
-                            writer.finish()
-                        },
-                    });
-                    self.state = ServerState::Open {
-                        session_id: *session_id,
-                    };
-                }
+                        self.packet_transport.queue_packet(Packet {
+                            payload: {
+                                let mut writer = Writer::new();
+                                writer.u8(numbers::SSH_MSG_SERVICE_ACCEPT);
+                                writer.string(service.as_bytes());
+                                writer.finish()
+                            },
+                        });
+                        self.state = ServerState::Open {
+                            session_id: *session_id,
+                        };
+                    }
+                    numbers::SSH_MSG_EXT_INFO if *may_send_extensions => {
+                        let mut p = packet.payload_parser();
+                        p.u8()?;
+                        let count = p.u32()?;
+
+                        debug!(%count, "Received extensions");
+
+                        for _ in 0..count {
+                            // while the spec doesn't say it, if you send an extension name that's invalid UTF-8 you deserve the error
+                            let name = p.utf8_string()?;
+                            let _value = p.string()?;
+                            debug!(?name, "Received extension");
+                        }
+
+                        self.state = ServerState::ServiceRequest {
+                            session_id: *session_id,
+                            may_send_extensions: false,
+                        };
+                    }
+                    _ => {
+                        return Err(peer_error!(
+                            "unexpected packet: {packet_type}, expected SSH_MSG_SERVICE_REQUEST"
+                        ))
+                    }
+                },
                 ServerState::Open { .. } => {
                     self.plaintext_packets.push_back(packet);
                 }
             }
         }
-        Ok(())
+        Ok(consumed)
     }
 
     pub fn is_open(&self) -> Option<SessionId> {

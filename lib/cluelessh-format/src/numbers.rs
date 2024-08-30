@@ -35,6 +35,8 @@ consts! {
     const SSH_MSG_DEBUG = 4;
     const SSH_MSG_SERVICE_REQUEST = 5;
     const SSH_MSG_SERVICE_ACCEPT = 6;
+    const SSH_MSG_EXT_INFO = 7;
+    const SSH_MSG_NEWCOMPRESS = 8;
 
     // 20 to 29 Algorithm negotiation
     const SSH_MSG_KEXINIT = 20;

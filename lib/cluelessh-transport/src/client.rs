@@ -7,7 +7,7 @@ use crate::{
         self, AlgorithmName, EncodedSshSignature, EncryptionAlgorithm, HostKeyVerifyAlgorithm,
         KeyExchangeSecret, SharedSecret, SupportedAlgorithms,
     },
-    packet::{Packet, PacketTransport, ProtocolIdentParser},
+    packet::{Packet, PacketTransport, ProtocolIdentParser, RecvBytesResult},
     peer_error, Msg, Result, SessionId, SshRng, SshStatus,
 };
 use cluelessh_format::{numbers, NameList, Reader, Writer};
@@ -78,7 +78,17 @@ impl ClientConnection {
         }
     }
 
-    pub fn recv_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+    pub fn recv_bytes(&mut self, mut bytes: &[u8]) -> Result<()> {
+        while let RecvBytesResult::Partial { consumed } = self.recv_bytes_inner(bytes)? {
+            bytes = &bytes[consumed..];
+            if bytes.is_empty() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn recv_bytes_inner(&mut self, bytes: &[u8]) -> Result<RecvBytesResult> {
         if let ClientState::ProtoExchange {
             ident_parser,
             client_ident,
@@ -89,12 +99,12 @@ impl ClientConnection {
                 let client_ident = mem::take(client_ident);
                 // This moves to the next state.
                 self.send_kexinit(client_ident, server_ident);
-                return Ok(());
+                return Ok(RecvBytesResult::Full);
             }
-            return Ok(());
+            return Ok(RecvBytesResult::Full);
         }
 
-        self.packet_transport.recv_bytes(bytes)?;
+        let consumed = self.packet_transport.recv_bytes(bytes)?;
 
         while let Some(packet) = self.packet_transport.recv_next_packet() {
             let packet_type = packet.payload.first().unwrap_or(&0xFF);
@@ -335,7 +345,7 @@ impl ClientConnection {
                 }
             }
         }
-        Ok(())
+        Ok(consumed)
     }
 
     pub fn next_msg_to_send(&mut self) -> Option<Msg> {

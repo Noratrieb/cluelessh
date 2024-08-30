@@ -194,6 +194,9 @@ impl<'a> NameList<'a> {
     pub fn none() -> NameList<'static> {
         NameList("")
     }
+    pub fn contains(&self, name: &str) -> bool {
+        self.iter().any(|n| n == name)
+    }
     pub fn iter(&self) -> std::str::Split<'a, char> {
         self.0.split(',')
     }
