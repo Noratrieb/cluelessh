@@ -2,6 +2,8 @@ log_level = "info"
 
 
 [subsystem.sftp]
+# can also:
+# path = "/nix/store/03fwrvyf4gw1gps9nmyvrxl17i7287ln-openssh-9.7p1/libexec/sftp-server"
 path = "../../target/debug/cluelesshd-sftp-server"
 
 [net]

@@ -356,12 +356,12 @@ impl Server {
                 Some(child) => {
                     let result = child.wait().await;
 
-                    self.respond::<WaitResponse>(
-                        result
-                            .map(|status| status.code())
-                            .map_err(|err| err.to_string()),
-                    )
-                    .await?;
+                    let result = result
+                        .map(|status| status.code())
+                        .map_err(|err| err.to_string());
+                    debug!(?result, "Child process exited");
+
+                    self.respond::<WaitResponse>(result).await?;
 
                     // implicitly drop stdio
                     self.shell_process = None;
