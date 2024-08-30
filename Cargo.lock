@@ -423,6 +423,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cluelessh-sftp"
+version = "0.1.0"
+
+[[package]]
+name = "cluelessh-sftp-proto"
+version = "0.1.0"
+dependencies = [
+ "cluelessh-transport",
+]
+
+[[package]]
 name = "cluelessh-tokio"
 version = "0.1.0"
 dependencies = [
@@ -487,6 +498,15 @@ dependencies = [
  "tracing-subscriber",
  "users",
  "zeroize",
+]
+
+[[package]]
+name = "cluelesshd-sftp-server"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -230,6 +230,11 @@ async fn handle_session_channel(
                             channel.send(ChannelOperationKind::Eof).await?;
                             channel.send(ChannelOperationKind::Close).await?;
                         }
+                        ChannelRequest::Subsystem { want_reply, .. } => {
+                            if want_reply {
+                                channel.send(ChannelOperationKind::Failure).await?;
+                            }
+                        }
                         ChannelRequest::ExitStatus { .. } => {}
                         ChannelRequest::Env { .. } => {}
                     };

@@ -105,6 +105,11 @@ pub enum ChannelRequest {
 
         command: Vec<u8>,
     },
+    Subsystem {
+        want_reply: bool,
+
+        name: String,
+    },
     Env {
         want_reply: bool,
 
@@ -471,6 +476,19 @@ impl ChannelsState {
                             command: command.to_owned(),
                         }
                     }
+                    "subsystem" => {
+                        if !self.is_server {
+                            return Err(peer_error!("server tried to set environment var"));
+                        }
+
+                        let name = p.utf8_string()?;
+
+                        info!(channel = %our_channel, %name, "Starting subsystem");
+                        ChannelRequest::Subsystem {
+                            want_reply,
+                            name: name.to_owned(),
+                        }
+                    }
                     "env" => {
                         if !self.is_server {
                             return Err(peer_error!("server tried to set environment var"));
@@ -632,6 +650,7 @@ impl ChannelsState {
                         Packet::new_msg_channel_request_shell(peer, b"shell", want_reply)
                     }
                     ChannelRequest::Exec { .. } => todo!("exec"),
+                    ChannelRequest::Subsystem { .. } => todo!("subsystem"),
                     ChannelRequest::Env { .. } => todo!("env"),
                     ChannelRequest::ExitStatus { status } => {
                         Packet::new_msg_channel_request_exit_status(
@@ -787,6 +806,7 @@ impl ChannelOperation {
                 ChannelRequest::PtyReq { .. } => "pty-req",
                 ChannelRequest::Shell { .. } => "shell",
                 ChannelRequest::Exec { .. } => "exec",
+                ChannelRequest::Subsystem { .. } => "subsystem",
                 ChannelRequest::Env { .. } => "env",
                 ChannelRequest::ExitStatus { .. } => "exit-status",
             },

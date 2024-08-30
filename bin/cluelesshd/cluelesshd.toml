@@ -1,5 +1,9 @@
 log_level = "info"
 
+
+[subsystem.sftp]
+path = "../../target/debug/cluelesshd-sftp-server"
+
 [net]
 ip = "0.0.0.0"
 port = 2223

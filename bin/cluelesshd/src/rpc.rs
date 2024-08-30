@@ -41,6 +41,8 @@ use users::os::unix::UserExt;
 use users::User;
 use zeroize::Zeroizing;
 
+use crate::config::Config;
+
 #[derive(Debug, Serialize, Deserialize)]
 enum Request {
     /// Performs the key exchange by generating a private key, deriving the shared secret,
@@ -136,6 +138,7 @@ struct ShellRequest {
     /// Whether a PTY is used and if yes, the TERM env var.
     pty_term: Option<String>,
     command: Option<String>,
+    subsystem: Option<String>,
     env: Vec<(String, String)>,
 }
 
@@ -162,17 +165,20 @@ pub struct Server {
     host_keys: Vec<PlaintextPrivateKey>,
     authenticated_user: Option<users::User>,
 
+    config: Config,
+
     pty_user: Option<OwnedFd>,
     shell_process: Option<Child>,
 }
 
 impl Server {
-    pub fn new(host_keys: Vec<PlaintextPrivateKey>) -> Result<Self> {
+    pub fn new(config: Config, host_keys: Vec<PlaintextPrivateKey>) -> Result<Self> {
         let (server, client) = UnixDatagram::pair().wrap_err("creating socketpair")?;
 
         Ok(Self {
             server,
             client,
+            config,
             host_keys,
             authenticated_user: None,
             pty_user: None,
@@ -366,13 +372,28 @@ impl Server {
     }
 
     async fn shell(&mut self, user: &User, req: ShellRequest) -> Result<Vec<OwnedFd>> {
+        let subsystem = match req.subsystem.as_deref() {
+            Some(subsystem) => match self.config.subsystem.get(subsystem) {
+                Some(system) => Some(system.path.clone()),
+                None => bail!("unsupported subsystem: {subsystem}"),
+            },
+            None => None,
+        };
+
         let shell = user.shell();
 
-        let mut cmd = Command::new(shell);
-        if let Some(shell_command) = req.command {
-            cmd.arg("-c");
-            cmd.arg(shell_command);
-        }
+        let cmd_arg0 = subsystem.as_deref().unwrap_or(shell);
+
+        // TODO: the SSH RFC mentions subsystems going through shell... should we?
+        let mut cmd = Command::new(cmd_arg0);
+
+        if subsystem.is_none() {
+            if let Some(shell_command) = req.command {
+                cmd.arg("-c");
+                cmd.arg(shell_command);
+            }
+        };
+
         cmd.env_clear();
 
         let has_pty = req.pty_term.is_some();
@@ -404,7 +425,7 @@ impl Server {
             cmd.env(k, v);
         }
 
-        debug!(cmd = %shell.display(), uid = %user.uid(), gid = %user.primary_group_id(), "Executing process");
+        debug!(cmd = %cmd_arg0.display(), uid = %user.uid(), gid = %user.primary_group_id(), "Executing process");
 
         let mut shell = cmd.spawn()?;
 
@@ -533,12 +554,14 @@ impl Client {
     pub async fn shell(
         &self,
         command: Option<String>,
+        subsystem: Option<String>,
         pty_term: Option<String>,
         env: Vec<(String, String)>,
     ) -> Result<Vec<OwnedFd>> {
         self.send_request(&Request::Shell(ShellRequest {
             pty_term,
             command,
+            subsystem,
             env,
         }))
         .await?;

@@ -1,11 +1,14 @@
 use eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
 };
 
 use crate::Args;
+
+// TODO: validate config and user nicer structs to consume it
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,6 +18,8 @@ pub struct Config {
     pub net: NetConfig,
     pub auth: AuthConfig,
     pub security: SecurityConfig,
+    #[serde(default)]
+    pub subsystem: HashMap<String, SubsystemConfig>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -52,8 +57,21 @@ pub struct SecurityConfig {
     pub experimental_seccomp: bool,
 }
 
+/// Add arbitrary subsystems.
+/// # Subsystem Protocol
+/// Every subsystem process gets spawned in the home directory of the user, as the user.
+/// Several FDs are guaranteed to be open.
+/// - stdin (0): data from the client channel
+/// - stdout (1): data to the client channel
+/// - stderr (2): data to the client channel extended stderr (used for debugging)
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubsystemConfig {
+    pub path: PathBuf,
+}
+
 impl Config {
-    pub fn find(args: &Args) -> Result<Self> {
+    pub fn load(args: &Args) -> Result<Self> {
         let path = std::env::var("CLUELESSHD_CONFIG")
             .map(PathBuf::from)
             .or(args.config.clone().ok_or(std::env::VarError::NotPresent))
@@ -63,8 +81,19 @@ impl Config {
             format!("failed to open config file '{}', refusing to start. you can change the config file path with the --config arg or the CLUELESSHD_CONFIG environment variable", path.display())
         })?;
 
-        toml::from_str(&content)
-            .wrap_err_with(|| format!("invalid config file '{}'", path.display()))
+        let mut config: Config = toml::from_str(&content)
+            .wrap_err_with(|| format!("invalid config file '{}'", path.display()))?;
+
+        for sub in config.subsystem.values_mut() {
+            sub.path = sub.path.canonicalize().wrap_err_with(|| {
+                format!(
+                    "error canonicalizing subsystem path: {}",
+                    sub.path.display()
+                )
+            })?;
+        }
+
+        Ok(config)
     }
 }
 

@@ -292,7 +292,7 @@ impl SessionState {
                             }
                         }
                     }
-                    ChannelRequest::Shell { want_reply } => match self.shell(None).await {
+                    ChannelRequest::Shell { want_reply } => match self.shell(None, None).await {
                         Ok(()) => {
                             if want_reply {
                                 self.channel.send(ChannelOperationKind::Success).await?;
@@ -309,7 +309,7 @@ impl SessionState {
                         want_reply,
                         command,
                     } => match String::from_utf8(command) {
-                        Ok(command) => match self.shell(Some(&command)).await {
+                        Ok(command) => match self.shell(Some(command), None).await {
                             Ok(()) => {
                                 if want_reply {
                                     self.channel.send(ChannelOperationKind::Success).await?;
@@ -330,6 +330,21 @@ impl SessionState {
                             }
                         }
                     },
+                    ChannelRequest::Subsystem { want_reply, name } => {
+                        match self.shell(None, Some(name)).await {
+                            Ok(()) => {
+                                if want_reply {
+                                    self.channel.send(ChannelOperationKind::Success).await?;
+                                }
+                            }
+                            Err(err) => {
+                                debug!(%err, "Failed to spawn subsystem");
+                                if want_reply {
+                                    self.channel.send(ChannelOperationKind::Failure).await?;
+                                }
+                            }
+                        }
+                    }
                     ChannelRequest::Env {
                         name,
                         value,
@@ -394,11 +409,12 @@ impl SessionState {
         Ok(())
     }
 
-    async fn shell(&mut self, shell_command: Option<&str>) -> Result<()> {
+    async fn shell(&mut self, shell_command: Option<String>, subsystem: Option<String>) -> Result<()> {
         let mut fds = self
             .rpc_client
             .shell(
-                shell_command.map(ToOwned::to_owned),
+                shell_command,
+                subsystem,
                 self.pty_term.clone(),
                 self.envs.clone(),
             )

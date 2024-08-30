@@ -25,7 +25,7 @@ use eyre::{bail, eyre, Context, Result};
 use rustix::fs::MemfdFlags;
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info, warn};
+use tracing::{ error, info, warn};
 
 use tracing_subscriber::EnvFilter;
 
@@ -51,9 +51,13 @@ fn main() -> eyre::Result<()> {
             // Initial setup
             let args = Args::parse();
 
-            let config = config::Config::find(&args)?;
+            let config = config::Config::load(&args)?;
 
             setup_tracing(&config);
+
+            for (name, system) in &config.subsystem {
+                info!(%name, path = %system.path.display(), "Loaded subsystem");
+            }
 
             if !rustix::process::getuid().is_root() {
                 warn!("Daemon not started as root. This disables several security mitigations and permits logging in as any other user");
@@ -197,7 +201,8 @@ async fn spawn_connection_child(
 ) -> Result<()> {
     let stream_fd = stream.as_raw_fd();
 
-    let mut rpc_server = rpc::Server::new(host_keys).wrap_err("creating RPC server")?;
+    let mut rpc_server =
+        rpc::Server::new(config.clone(), host_keys).wrap_err("creating RPC server")?;
 
     let rpc_client_fd = rpc_server.client_fd().as_raw_fd();
 
