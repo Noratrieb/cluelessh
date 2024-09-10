@@ -25,7 +25,7 @@ use eyre::{bail, eyre, Context, Result};
 use rustix::fs::MemfdFlags;
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{ error, info, warn};
+use tracing::{error, info, warn};
 
 use tracing_subscriber::EnvFilter;
 

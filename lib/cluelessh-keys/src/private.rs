@@ -108,7 +108,6 @@ impl EncryptedPrivateKeys {
         p.array(*MAGIC);
         p.string(self.cipher.name().as_bytes());
         p.string(self.kdf.name().as_bytes());
-        dbg!(self.kdf.options());
         p.string(self.kdf.options());
 
         p.u32(self.public_keys.len() as u32);
@@ -302,9 +301,13 @@ impl KeyEncryptionParams {
 impl PlaintextPrivateKey {
     pub fn generate(comment: String, params: KeyGenerationParams) -> Self {
         let keytype = crypto::generate_private_key(params);
+        Self::new(comment, keytype)
+    }
+
+    pub fn new(comment: String, private_key: PrivateKey) -> Self {
         Self {
             comment,
-            private_key: keytype,
+            private_key,
             checkint: rand::random(),
         }
     }

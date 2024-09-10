@@ -2,7 +2,10 @@
 
 // <https://datatracker.ietf.org/doc/html/rfc4716> exists but is kinda weird
 
-use std::fmt::{Debug, Display};
+use std::{
+    fmt::{Debug, Display},
+    str::FromStr,
+};
 
 use base64::Engine;
 
@@ -24,6 +27,39 @@ pub enum PublicKey {
 pub struct PublicKeyWithComment {
     pub key: PublicKey,
     pub comment: String,
+}
+
+impl FromStr for PublicKeyWithComment {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split_ascii_whitespace();
+        let alg = parts
+            .next()
+            .ok_or_else(|| ParseError("missing algorithm on line".to_owned()))?;
+        let key_blob = parts
+            .next()
+            .ok_or_else(|| ParseError("missing key on line".to_owned()))?;
+        let key_blob = base64::prelude::BASE64_STANDARD
+            .decode(key_blob)
+            .map_err(|err| ParseError(format!("invalid base64 encoding for key: {err}")))?;
+        let comment = parts.next().unwrap_or_default();
+
+        let public_key = PublicKey::from_wire_encoding(&key_blob)
+            .map_err(|err| ParseError(format!("unsupported key: {err}")))?;
+
+        if public_key.algorithm_name() != alg {
+            return Err(ParseError(format!(
+                "algorithm name mismatch: {} != {}",
+                public_key.algorithm_name(),
+                alg
+            )));
+        }
+
+        Ok(Self {
+            key: public_key,
+            comment: comment.to_owned(),
+        })
+    }
 }
 
 impl PublicKey {

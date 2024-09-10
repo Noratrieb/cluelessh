@@ -6,8 +6,9 @@ use std::{
 
 use base64::Engine;
 use clap::Parser;
-use cluelessh_keys::private::{
-    EncryptedPrivateKeys, KeyEncryptionParams, PlaintextPrivateKey, PrivateKey,
+use cluelessh_keys::{
+    private::{EncryptedPrivateKeys, KeyEncryptionParams, PlaintextPrivateKey, PrivateKey},
+    public::{PublicKey, PublicKeyWithComment},
 };
 use eyre::{bail, Context};
 
@@ -51,6 +52,8 @@ enum DebugCommand {
     Unpem { id_file: PathBuf },
     /// Extract the encrypted part of the private key
     ExtractEncrypted { id_file: PathBuf },
+    /// Create a fake private key that contains random private key bytes and the actual public key bytes.
+    CreateFakePrivkey { public_key: PathBuf },
 }
 
 #[derive(clap::ValueEnum, Clone)]
@@ -96,6 +99,53 @@ fn main() -> eyre::Result<()> {
 
             let data = keys.decrypt_encrypted_part(passphrase.as_deref())?;
             std::io::stdout().lock().write_all(&data)?;
+            Ok(())
+        }
+        Subcommand::Debug {
+            cmd: DebugCommand::CreateFakePrivkey { public_key },
+        } => {
+            let file = std::fs::read_to_string(&public_key)
+                .wrap_err_with(|| format!("reading file {}", public_key.display()))?;
+            let public_key = file
+                .parse::<PublicKeyWithComment>()
+                .wrap_err("failed to parse public key")?;
+
+            let mut fake_private_key = PlaintextPrivateKey::generate(
+                "".into(),
+                cluelessh_keys::KeyGenerationParams {
+                    key_type: match public_key.key {
+                        PublicKey::Ed25519 { .. } => cluelessh_keys::KeyType::Ed25519,
+                        PublicKey::EcdsaSha2NistP256 { .. } => cluelessh_keys::KeyType::Ecdsa,
+                    },
+                },
+            );
+
+            match public_key.key {
+                PublicKey::Ed25519 { public_key } => {
+                    let PrivateKey::Ed25519 {
+                        public_key: fake_public_key,
+                        ..
+                    } = &mut fake_private_key.private_key
+                    else {
+                        panic!()
+                    };
+                    *fake_public_key = public_key;
+                }
+                PublicKey::EcdsaSha2NistP256 { public_key } => {
+                    let PrivateKey::EcdsaSha2NistP256 {
+                        public_key: fake_public_key,
+                        ..
+                    } = &mut fake_private_key.private_key
+                    else {
+                        panic!()
+                    };
+                    *fake_public_key = public_key;
+                }
+            }
+
+            let fake_private_key = fake_private_key.encrypt(KeyEncryptionParams::plaintext())?;
+
+            println!("{}", fake_private_key.to_bytes_armored());
             Ok(())
         }
         Subcommand::Info {

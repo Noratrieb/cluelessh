@@ -1,5 +1,3 @@
-use base64::Engine;
-
 use crate::public::{PublicKey, PublicKeyWithComment};
 
 pub struct AuthorizedKeys {
@@ -16,33 +14,10 @@ impl AuthorizedKeys {
         let mut keys: Vec<PublicKeyWithComment> = Vec::new();
 
         for line in lines {
-            let mut parts = line.split_whitespace();
-            let alg = parts
-                .next()
-                .ok_or_else(|| Error("missing algorithm on line".to_owned()))?;
-            let key_blob = parts
-                .next()
-                .ok_or_else(|| Error("missing key on line".to_owned()))?;
-            let key_blob = base64::prelude::BASE64_STANDARD
-                .decode(key_blob)
-                .map_err(|err| Error(format!("invalid base64 encoding for key: {err}")))?;
-            let comment = parts.next().unwrap_or_default();
-
-            let public_key = PublicKey::from_wire_encoding(&key_blob)
-                .map_err(|err| Error(format!("unsupported key: {err}")))?;
-
-            if public_key.algorithm_name() != alg {
-                return Err(Error(format!(
-                    "algorithm name mismatch: {} != {}",
-                    public_key.algorithm_name(),
-                    alg
-                )));
-            }
-
-            keys.push(PublicKeyWithComment {
-                key: public_key,
-                comment: comment.to_owned(),
-            });
+            let key = line
+                .parse::<PublicKeyWithComment>()
+                .map_err(|err| Error(err.0))?;
+            keys.push(key);
         }
 
         Ok(Self { keys })
